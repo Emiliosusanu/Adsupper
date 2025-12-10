@@ -591,15 +591,47 @@ Deno.serve(async (req) => {
       });
     }
 
-    // 3) Delete old data for this account (structure only)
+    // 3) Load existing metrics so we can carry them over if new reports are missing,
+    //    then delete old data for this account (structure only)
     const { data: oldCampaigns } = await supabase
       .from('amazon_campaigns')
-      .select('id')
+      .select('id, campaign_id, spend, impressions, clicks, orders, acos, ctr, cpc')
       .eq('account_id', account.id);
 
-    const oldCampaignIds = (oldCampaigns ?? []).map((c: any) => c.id);
+    const oldCampaignMetricsByCampaignId = new Map<string, any>();
+    const oldCampaignIds = (oldCampaigns ?? []).map((c: any) => {
+      if (c.campaign_id) {
+        oldCampaignMetricsByCampaignId.set(String(c.campaign_id), {
+          spend: Number(c.spend ?? 0) || 0,
+          impressions: Number(c.impressions ?? 0) || 0,
+          clicks: Number(c.clicks ?? 0) || 0,
+          orders: Number(c.orders ?? 0) || 0,
+          acos: Number(c.acos ?? 0) || 0,
+          ctr: Number(c.ctr ?? 0) || 0,
+          cpc: Number(c.cpc ?? 0) || 0,
+        });
+      }
+      return c.id;
+    });
 
+    const oldKeywordMetricsByKeywordId = new Map<string, any>();
     if (oldCampaignIds.length > 0) {
+      const { data: oldKeywords } = await supabase
+        .from('amazon_keywords')
+        .select('keyword_id, spend, impressions, clicks, orders, acos')
+        .in('campaign_id', oldCampaignIds);
+
+      for (const k of oldKeywords ?? []) {
+        if (!k.keyword_id) continue;
+        oldKeywordMetricsByKeywordId.set(String(k.keyword_id), {
+          spend: Number(k.spend ?? 0) || 0,
+          impressions: Number(k.impressions ?? 0) || 0,
+          clicks: Number(k.clicks ?? 0) || 0,
+          orders: Number(k.orders ?? 0) || 0,
+          acos: Number(k.acos ?? 0) || 0,
+        });
+      }
+
       await supabase
         .from('amazon_keywords')
         .delete()
@@ -662,22 +694,28 @@ Deno.serve(async (req) => {
     );
 
     const campaignsToInsert = amazonCampaigns.map((c) => {
-      const m = metricsByCampaignId.get(String(c.campaignId)) ?? {
+      const campaignKey = String(c.campaignId);
+      const newM = metricsByCampaignId.get(campaignKey) ?? null;
+      const oldM = oldCampaignMetricsByCampaignId.get(campaignKey) ?? null;
+      const base = newM || oldM || {
         impressions: 0,
         clicks: 0,
         cost: 0,
         orders: 0,
         sales: 0,
+        acos: 0,
+        ctr: 0,
+        cpc: 0,
       };
 
-      const spend = m.cost;
-      const impressions = m.impressions;
-      const clicks = m.clicks;
-      const orders = m.orders;
-      const sales = m.sales;
-      const acos = sales > 0 ? spend / sales : 0;
-      const ctr = impressions > 0 ? clicks / impressions : 0;
-      const cpc = clicks > 0 ? spend / clicks : 0;
+      const spend = base.cost ?? base.spend ?? 0;
+      const impressions = base.impressions ?? 0;
+      const clicks = base.clicks ?? 0;
+      const orders = base.orders ?? 0;
+      const sales = base.sales ?? 0;
+      const acos = sales > 0 ? spend / sales : (base.acos ?? 0);
+      const ctr = impressions > 0 ? clicks / impressions : (base.ctr ?? 0);
+      const cpc = clicks > 0 ? spend / clicks : (base.cpc ?? 0);
 
       return {
         account_id: account.id,
@@ -841,6 +879,8 @@ Deno.serve(async (req) => {
           const keywordAmazonId = String(kw.keywordId);
           keywordAmazonIds.push(keywordAmazonId);
 
+          const oldKw = oldKeywordMetricsByKeywordId.get(keywordAmazonId) ?? {};
+
           keywordRows.push({
             campaign_id: campaignDbId,
             keyword_id: keywordAmazonId,
@@ -848,11 +888,11 @@ Deno.serve(async (req) => {
             match_type: kw.matchType ?? '',
             bid: kw.bid ?? 0,
             status: String(kw.state ?? 'unknown').toLowerCase(),
-            spend: 0,
-            impressions: 0,
-            clicks: 0,
-            orders: 0,
-            acos: 0,
+            spend: oldKw.spend ?? 0,
+            impressions: oldKw.impressions ?? 0,
+            clicks: oldKw.clicks ?? 0,
+            orders: oldKw.orders ?? 0,
+            acos: oldKw.acos ?? 0,
             ad_group_id: adGroupDbId,
             amazon_profile_id_text: String(account.amazon_profile_id),
             amazon_region: account.amazon_region ?? null,
