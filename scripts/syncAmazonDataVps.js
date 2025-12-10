@@ -29,7 +29,22 @@ const ACCOUNT_ID = process.env.ACCOUNT_ID || null;
 // Default to 7 days (same as Edge Function). Can be overridden via env.
 const DAYS_WINDOW = Number(process.env.DAYS_WINDOW || 7);
 
-const AMAZON_API_BASE = 'https://advertising-api.amazon.com';
+// Region-aware base selection
+function normalizeRegion(region) {
+  if (!region) return 'na';
+  const r = String(region).toLowerCase();
+  if (['na', 'north_america'].includes(r)) return 'na';
+  if (['eu', 'europe'].includes(r)) return 'eu';
+  if (['fe', 'far_east', 'apac', 'asia'].includes(r)) return 'fe';
+  return 'na';
+}
+
+function regionApiBase(region) {
+  const r = normalizeRegion(region);
+  if (r === 'eu') return 'https://advertising-api-eu.amazon.com';
+  if (r === 'fe') return 'https://advertising-api-fe.amazon.com';
+  return 'https://advertising-api.amazon.com';
+}
 
 if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !AMAZON_CLIENT_ID || !AMAZON_CLIENT_SECRET) {
   console.error(
@@ -115,7 +130,7 @@ async function downloadReportRows(downloadUrl) {
   }
 }
 
-async function getCampaignMetrics(profileId, accessToken, daysWindow) {
+async function getCampaignMetrics(profileId, accessToken, daysWindow, apiBase) {
   const { startDate, endDate } = buildDateRange(daysWindow);
 
   const createBody = {
@@ -140,7 +155,7 @@ async function getCampaignMetrics(profileId, accessToken, daysWindow) {
   };
 
   try {
-    const createRes = await fetch(`${AMAZON_API_BASE}/reporting/reports`, {
+    const createRes = await fetch(`${apiBase}/reporting/reports`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -177,8 +192,8 @@ async function getCampaignMetrics(profileId, accessToken, daysWindow) {
     let downloadUrl = null;
     let lastPoll = null;
     // On VPS we can safely poll longer: up to ~10 minutes (120 * 5s)
-    for (let i = 0; i < 120; i++) {
-      const pollRes = await fetch(`${AMAZON_API_BASE}/reporting/reports/${reportId}`, {
+    for (let i = 0; i < 180; i++) {
+      const pollRes = await fetch(`${apiBase}/reporting/reports/${reportId}`, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
           'Amazon-Advertising-API-ClientId': AMAZON_CLIENT_ID,
@@ -234,7 +249,7 @@ async function getCampaignMetrics(profileId, accessToken, daysWindow) {
   }
 }
 
-async function getKeywordMetrics(profileId, accessToken, daysWindow) {
+async function getKeywordMetrics(profileId, accessToken, daysWindow, apiBase) {
   const { startDate, endDate } = buildDateRange(daysWindow);
 
   const createBody = {
@@ -269,7 +284,7 @@ async function getKeywordMetrics(profileId, accessToken, daysWindow) {
   };
 
   try {
-    const createRes = await fetch(`${AMAZON_API_BASE}/reporting/reports`, {
+    const createRes = await fetch(`${apiBase}/reporting/reports`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -305,9 +320,9 @@ async function getKeywordMetrics(profileId, accessToken, daysWindow) {
 
     let downloadUrl = null;
     let lastPoll = null;
-    // On VPS we can safely poll longer: up to ~10 minutes (120 * 5s)
-    for (let i = 0; i < 120; i++) {
-      const pollRes = await fetch(`${AMAZON_API_BASE}/reporting/reports/${reportId}`, {
+    // On VPS we can safely poll longer: up to ~15 minutes (180 * 5s)
+    for (let i = 0; i < 180; i++) {
+      const pollRes = await fetch(`${apiBase}/reporting/reports/${reportId}`, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
           'Amazon-Advertising-API-ClientId': AMAZON_CLIENT_ID,
@@ -342,6 +357,7 @@ async function getKeywordMetrics(profileId, accessToken, daysWindow) {
       const sales = Number(row.sales14d ?? row.sales ?? 0) || 0;
 
       byKeywordId.set(keywordId, {
+        campaignId: String(row.campaignId ?? row.campaign_id ?? ''),
         impressions,
         clicks,
         cost,
@@ -421,6 +437,7 @@ async function syncAccount(account) {
     return;
   }
 
+  const apiBase = regionApiBase(account.amazon_region);
   // Load existing metrics so we can carry them over if new reports are missing
   console.log('Deleting old data for account', account.id);
 
@@ -481,7 +498,7 @@ async function syncAccount(account) {
 
   // Fetch campaigns from Amazon v2
   console.log('Fetching campaigns from Amazon...');
-  const campaignsRes = await fetch(`${AMAZON_API_BASE}/v2/campaigns`, {
+  const campaignsRes = await fetch(`${apiBase}/v2/campaigns`, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Amazon-Advertising-API-ClientId': AMAZON_CLIENT_ID,
@@ -500,10 +517,11 @@ async function syncAccount(account) {
   console.log('Fetched', amazonCampaigns.length, 'campaigns.');
 
   // Metrics via v3
-  const metricsByCampaignId = await getCampaignMetrics(
+  let metricsByCampaignId = await getCampaignMetrics(
     String(account.amazon_profile_id),
     accessToken,
     DAYS_WINDOW,
+    apiBase,
   );
 
   const campaignsToInsert = amazonCampaigns.map((c) => {
@@ -589,7 +607,7 @@ async function syncAccount(account) {
 
     try {
       const agRes = await fetch(
-        `${AMAZON_API_BASE}/v2/adGroups?campaignIdFilter=${campaignAmazonId}`,
+        `${apiBase}/v2/adGroups?campaignIdFilter=${campaignAmazonId}`,
         {
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -657,7 +675,7 @@ async function syncAccount(account) {
 
     try {
       const kwRes = await fetch(
-        `${AMAZON_API_BASE}/v2/keywords?adGroupIdFilter=${agAmazonId}`,
+        `${apiBase}/v2/keywords?adGroupIdFilter=${agAmazonId}`,
         {
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -710,6 +728,7 @@ async function syncAccount(account) {
       String(account.amazon_profile_id),
       accessToken,
       DAYS_WINDOW,
+      apiBase,
     );
 
     if (keywordMetricsById && keywordMetricsById.size > 0) {
@@ -728,6 +747,37 @@ async function syncAccount(account) {
         row.clicks = clicks;
         row.orders = orders;
         row.acos = sales > 0 ? spend / (sales || 1) : 0;
+      }
+
+      // If campaign report is missing/empty, aggregate from keyword metrics
+      if (!metricsByCampaignId || metricsByCampaignId.size === 0) {
+        const agg = new Map(); // campaignId -> totals
+        for (const m of keywordMetricsById.values()) {
+          const cid = String(m.campaignId || '');
+          if (!cid) continue;
+          const a = agg.get(cid) || { impressions: 0, clicks: 0, cost: 0, orders: 0, sales: 0 };
+          a.impressions += Number(m.impressions || 0);
+          a.clicks += Number(m.clicks || 0);
+          a.cost += Number(m.cost || 0);
+          a.orders += Number(m.orders || 0);
+          a.sales += Number(m.sales || 0);
+          agg.set(cid, a);
+        }
+        if (agg.size > 0) {
+          console.log(`Using keyword report aggregation for campaign metrics (${agg.size} campaigns).`);
+          metricsByCampaignId = new Map();
+          for (const [cid, a] of agg.entries()) {
+            const impressions = a.impressions;
+            const clicks = a.clicks;
+            const cost = a.cost;
+            const orders = a.orders;
+            const sales = a.sales;
+            const ctr = impressions > 0 ? clicks / impressions : 0;
+            const cpc = clicks > 0 ? cost / clicks : 0;
+            const acos = sales > 0 ? cost / sales : 0;
+            metricsByCampaignId.set(String(cid), { impressions, clicks, cost, orders, sales, ctr, cpc, acos });
+          }
+        }
       }
     }
   }
@@ -750,6 +800,34 @@ async function syncAccount(account) {
       console.error('Insert keywords error', insertKwErr);
     } else {
       console.log('Inserted', keywordRows.length, 'keyword rows.');
+    }
+  }
+
+  // Update campaign metrics using whichever metrics we have at this point
+  if (metricsByCampaignId && metricsByCampaignId.size > 0 && insertedCampaigns.length > 0) {
+    const updateRows = [];
+    for (const c of amazonCampaigns) {
+      const amazonId = String(c.campaignId);
+      const dbId = campaignIdMap.get(amazonId);
+      const m = metricsByCampaignId.get(amazonId);
+      if (!dbId || !m) continue;
+      const spend = (m.cost ?? m.spend ?? 0);
+      const impressions = m.impressions ?? 0;
+      const clicks = m.clicks ?? 0;
+      const orders = m.orders ?? 0;
+      const sales = m.sales ?? 0;
+      const acos = sales > 0 ? spend / sales : (m.acos ?? 0);
+      const ctr = impressions > 0 ? clicks / impressions : (m.ctr ?? 0);
+      const cpc = clicks > 0 ? spend / clicks : (m.cpc ?? 0);
+      updateRows.push({ id: dbId, spend, impressions, clicks, orders, acos, ctr, cpc });
+    }
+    if (updateRows.length > 0) {
+      const { error: upErr } = await supabase.from('amazon_campaigns').upsert(updateRows);
+      if (upErr) {
+        console.error('Failed to update campaign metrics from keyword aggregation', upErr);
+      } else {
+        console.log('Updated', updateRows.length, 'campaigns with metrics.');
+      }
     }
   }
 
