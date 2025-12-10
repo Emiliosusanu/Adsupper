@@ -1,9 +1,19 @@
 import { supabase } from './supabaseClient.js';
 
 // Amazon Ads API Configuration
-const AMAZON_CLIENT_ID = import.meta.env.VITE_AMAZON_CLIENT_ID;
-const AMAZON_CLIENT_SECRET = import.meta.env.VITE_AMAZON_CLIENT_SECRET;
-const AMAZON_REDIRECT_URI = import.meta.env.VITE_AMAZON_REDIRECT_URI || 'http://localhost:5173/amazon-callback';
+const AMAZON_CLIENT_ID =
+  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_AMAZON_CLIENT_ID) ||
+  process.env.VITE_AMAZON_CLIENT_ID ||
+  process.env.AMAZON_CLIENT_ID;
+const AMAZON_CLIENT_SECRET =
+  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_AMAZON_CLIENT_SECRET) ||
+  process.env.VITE_AMAZON_CLIENT_SECRET ||
+  process.env.AMAZON_CLIENT_SECRET;
+const AMAZON_REDIRECT_URI =
+  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_AMAZON_REDIRECT_URI) ||
+  process.env.VITE_AMAZON_REDIRECT_URI ||
+  process.env.AMAZON_REDIRECT_URI ||
+  'http://localhost:5173/amazon-callback';
 
 // Amazon API endpoints
 const AMAZON_AUTH_URL = 'https://www.amazon.com/ap/oa';
