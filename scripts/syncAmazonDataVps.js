@@ -16,7 +16,7 @@
 //
 // Optional env vars:
 //   ACCOUNT_ID   -> limit sync to a single amazon_accounts.id
-//   DAYS_WINDOW  -> number of days for metrics (default 30)
+//   DAYS_WINDOW  -> number of days for metrics (default 7)
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -26,7 +26,8 @@ const AMAZON_CLIENT_ID = process.env.AMAZON_CLIENT_ID;
 const AMAZON_CLIENT_SECRET = process.env.AMAZON_CLIENT_SECRET;
 
 const ACCOUNT_ID = process.env.ACCOUNT_ID || null;
-const DAYS_WINDOW = Number(process.env.DAYS_WINDOW || 30);
+// Default to 7 days (same as Edge Function). Can be overridden via env.
+const DAYS_WINDOW = Number(process.env.DAYS_WINDOW || 7);
 
 const AMAZON_API_BASE = 'https://advertising-api.amazon.com';
 
