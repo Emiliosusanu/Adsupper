@@ -28,6 +28,10 @@ const AMAZON_CLIENT_SECRET = process.env.AMAZON_CLIENT_SECRET;
 const ACCOUNT_ID = process.env.ACCOUNT_ID || null;
 // Default to 7 days (same as Edge Function). Can be overridden via env.
 const DAYS_WINDOW = Number(process.env.DAYS_WINDOW || 7);
+const SKIP_METRICS =
+  process.env.SKIP_METRICS === '1' ||
+  process.env.SKIP_METRICS === 'true' ||
+  process.env.SKIP_METRICS === 'TRUE';
 
 // Region-aware base selection
 function normalizeRegion(region) {
@@ -541,22 +545,27 @@ async function syncAccount(account) {
   const amazonCampaigns = await campaignsRes.json();
   console.log('Fetched', amazonCampaigns.length, 'campaigns.');
 
-  // Metrics via v3
-  let metricsByCampaignId = await getCampaignMetrics(
-    String(account.amazon_profile_id),
-    accessToken,
-    DAYS_WINDOW,
-    apiBase,
-  );
-  // If empty (possible 401 during long polling), refresh and retry once
-  if (!metricsByCampaignId || metricsByCampaignId.size === 0) {
-    await refreshAndUpdateAccessToken();
+  // Metrics via v3 (unless SKIP_METRICS)
+  let metricsByCampaignId = new Map();
+  if (!SKIP_METRICS) {
     metricsByCampaignId = await getCampaignMetrics(
       String(account.amazon_profile_id),
       accessToken,
       DAYS_WINDOW,
       apiBase,
     );
+    // If empty (possible 401 during long polling), refresh and retry once
+    if (!metricsByCampaignId || metricsByCampaignId.size === 0) {
+      await refreshAndUpdateAccessToken();
+      metricsByCampaignId = await getCampaignMetrics(
+        String(account.amazon_profile_id),
+        accessToken,
+        DAYS_WINDOW,
+        apiBase,
+      );
+    }
+  } else {
+    console.log('SKIP_METRICS=1: skipping v3 campaign report and carrying over existing metrics.');
   }
 
   const campaignsToInsert = amazonCampaigns.map((c) => {
@@ -630,6 +639,7 @@ async function syncAccount(account) {
       return;
     }
     insertedCampaigns = data || [];
+    console.log('Upserted', insertedCampaigns.length, 'campaign rows.');
   }
 
   const campaignIdMap = new Map();
@@ -715,6 +725,7 @@ async function syncAccount(account) {
       console.error('Upsert ad groups error', upsertAgErr);
     } else {
       insertedAdGroups = agData || [];
+      console.log('Upserted', insertedAdGroups.length, 'ad group rows.');
     }
   }
 
@@ -802,8 +813,8 @@ async function syncAccount(account) {
     }
   }
 
-  // Enrich keywords with performance metrics
-  if (keywordAmazonIds.length > 0) {
+  // Enrich keywords with performance metrics (unless SKIP_METRICS)
+  if (!SKIP_METRICS && keywordAmazonIds.length > 0) {
     console.log('Fetching keyword metrics via v3...');
     let keywordMetricsById = await getKeywordMetrics(
       String(account.amazon_profile_id),
