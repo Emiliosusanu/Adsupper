@@ -14,8 +14,10 @@
 //   AMAZON_CLIENT_SECRET
 //
 // Optional env vars:
-//   ACCOUNT_ID  -> limit to a single amazon_accounts.id
-//   USER_ID     -> limit to rules/accounts of a single auth.users.id
+//   ACCOUNT_ID            -> limit to a single amazon_accounts.id
+//   USER_ID               -> limit to rules/accounts of a single auth.users.id
+//   CHECK_INTERVAL_MINUTES -> how often to re-check rules in daemon mode (default 15)
+//   RUN_ONCE              -> if '1' or 'true', run a single optimization cycle then exit
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -26,6 +28,11 @@ const AMAZON_CLIENT_SECRET = process.env.AMAZON_CLIENT_SECRET;
 
 const ACCOUNT_ID = process.env.ACCOUNT_ID || null;
 const USER_ID = process.env.USER_ID || null;
+const CHECK_INTERVAL_MINUTES = Number(process.env.CHECK_INTERVAL_MINUTES || 15);
+const RUN_ONCE =
+  process.env.RUN_ONCE === '1' ||
+  process.env.RUN_ONCE === 'true' ||
+  process.env.RUN_ONCE === 'TRUE';
 
 const AMAZON_API_BASE = 'https://advertising-api.amazon.com';
 
@@ -478,8 +485,8 @@ async function processAccount(account, rulesForUser) {
   }
 }
 
-async function main() {
-  console.log('▶️ VPS Keyword Optimizer started at', nowIso());
+async function runOneCycle() {
+  console.log('▶️ VPS Keyword Optimizer cycle started at', nowIso());
 
   try {
     const [rules, accounts] = await Promise.all([
@@ -488,14 +495,14 @@ async function main() {
     ]);
 
     if (!rules.length) {
-      console.log('No enabled rules. Nothing to do.');
-      await logJob('success', 'No rules to run');
+      console.log('No enabled rules. Nothing to do this cycle.');
+      await logJob('success', 'No rules to run (cycle)');
       return;
     }
 
     if (!accounts.length) {
-      console.log('No active amazon_accounts. Nothing to do.');
-      await logJob('success', 'No accounts to optimize');
+      console.log('No active amazon_accounts. Nothing to do this cycle.');
+      await logJob('success', 'No accounts to optimize (cycle)');
       return;
     }
 
@@ -522,12 +529,35 @@ async function main() {
       }
     }
 
-    console.log('🏁 VPS Keyword Optimizer finished at', nowIso());
-    await logJob('success', 'Keyword optimizer finished successfully');
+    console.log('🏁 VPS Keyword Optimizer cycle finished at', nowIso());
+    await logJob('success', 'Keyword optimizer cycle finished successfully');
   } catch (e) {
-    console.error('Fatal optimizer error:', e);
-    await logJob('error', 'Keyword optimizer failed', { error: String(e.message || e) });
-    process.exit(1);
+    console.error('Fatal optimizer error in cycle:', e);
+    await logJob('error', 'Keyword optimizer cycle failed', {
+      error: String(e.message || e),
+    });
+  }
+}
+
+async function main() {
+  if (RUN_ONCE) {
+    console.log('RUN_ONCE=1, executing a single optimization cycle.');
+    await runOneCycle();
+    return;
+  }
+
+  const intervalMs = CHECK_INTERVAL_MINUTES * 60 * 1000;
+  console.log(
+    `▶️ VPS Keyword Optimizer daemon started at ${nowIso()} (interval ${CHECK_INTERVAL_MINUTES} min)`,
+  );
+
+  // Simple daemon loop: run a cycle, then sleep.
+  // Per-rule frequency is still enforced by ruleDue() and last_run timestamps.
+  // This loop just ensures we keep checking regularly.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    await runOneCycle();
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
 }
 
