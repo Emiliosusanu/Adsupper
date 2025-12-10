@@ -460,7 +460,8 @@ async function syncAccount(account) {
     }
   }
   // Load existing metrics so we can carry them over if new reports are missing
-  console.log('Deleting old data for account', account.id);
+  // and prepare existing-id maps for safe upsert (no destructive delete)
+  console.log('Loading existing data for account', account.id);
 
   const { data: oldCampaigns } = await supabase
     .from('amazon_campaigns')
@@ -484,10 +485,11 @@ async function syncAccount(account) {
   });
 
   const oldKeywordMetricsByKeywordId = new Map();
+  const existingKeywordIdByAmazonId = new Map();
   if (oldCampaignIds.length > 0) {
     const { data: oldKeywords } = await supabase
       .from('amazon_keywords')
-      .select('keyword_id, spend, impressions, clicks, orders, acos')
+      .select('id, amazon_keyword_id, keyword_id, spend, impressions, clicks, orders, acos')
       .in('campaign_id', oldCampaignIds);
 
     for (const k of oldKeywords || []) {
@@ -499,23 +501,25 @@ async function syncAccount(account) {
         orders: Number(k.orders ?? 0) || 0,
         acos: Number(k.acos ?? 0) || 0,
       });
+      if (k.amazon_keyword_id && k.id) {
+        existingKeywordIdByAmazonId.set(String(k.amazon_keyword_id), k.id);
+      }
     }
-
-    await supabase
-      .from('amazon_keywords')
-      .delete()
-      .in('campaign_id', oldCampaignIds);
   }
 
-  await supabase
-    .from('amazon_ad_groups')
-    .delete()
-    .eq('account_id', account.id);
-
-  await supabase
-    .from('amazon_campaigns')
-    .delete()
-    .eq('account_id', account.id);
+  // Existing ad groups for id-mapping during upsert
+  const existingAdGroupIdMap = new Map();
+  {
+    const { data: existingAdGroups } = await supabase
+      .from('amazon_ad_groups')
+      .select('id, amazon_ad_group_id')
+      .eq('account_id', account.id);
+    for (const ag of existingAdGroups || []) {
+      if (ag.amazon_ad_group_id && ag.id) {
+        existingAdGroupIdMap.set(String(ag.amazon_ad_group_id), ag.id);
+      }
+    }
+  }
 
   // Fetch campaigns from Amazon v2
   console.log('Fetching campaigns from Amazon...');
@@ -610,9 +614,16 @@ async function syncAccount(account) {
 
   let insertedCampaigns = [];
   if (campaignsToInsert.length > 0) {
+    // Safe upsert: if an existing campaign row (by id) exists, update; otherwise insert.
+    // We rely on primary key id for updates via upsert; for new rows 'id' is absent.
     const { data, error } = await supabase
       .from('amazon_campaigns')
-      .insert(campaignsToInsert)
+      .upsert(
+        campaignsToInsert.map((c) => {
+          const existingId = oldCampaigns?.find((oc) => String(oc.campaign_id) === c.campaign_id)?.id;
+          return existingId ? { id: existingId, ...c } : c;
+        }),
+      )
       .select('id, campaign_id');
     if (error) {
       console.error('Insert campaigns error', error);
@@ -691,18 +702,25 @@ async function syncAccount(account) {
 
   let insertedAdGroups = [];
   if (adGroupRows.length > 0) {
-    const { data: agData, error: insertAgErr } = await supabase
+    // Attach existing ids for upsert
+    const upsertRows = adGroupRows.map((row) => {
+      const existingId = existingAdGroupIdMap.get(String(row.amazon_ad_group_id));
+      return existingId ? { id: existingId, ...row } : row;
+    });
+    const { data: agData, error: upsertAgErr } = await supabase
       .from('amazon_ad_groups')
-      .insert(adGroupRows)
+      .upsert(upsertRows)
       .select('id, amazon_ad_group_id');
-    if (insertAgErr) {
-      console.error('Insert ad groups error', insertAgErr);
+    if (upsertAgErr) {
+      console.error('Upsert ad groups error', upsertAgErr);
     } else {
       insertedAdGroups = agData || [];
     }
   }
 
   const adGroupIdMap = new Map();
+  // include existing first, then override/extend with upsert results
+  for (const [k, v] of existingAdGroupIdMap.entries()) adGroupIdMap.set(String(k), v);
   for (const ag of insertedAdGroups) {
     adGroupIdMap.set(String(ag.amazon_ad_group_id), ag.id);
   }
@@ -759,7 +777,9 @@ async function syncAccount(account) {
 
         const oldKw = oldKeywordMetricsByKeywordId.get(keywordAmazonId) || {};
 
+        const maybeExistingId = existingKeywordIdByAmazonId.get(keywordAmazonId);
         keywordRows.push({
+          id: maybeExistingId || undefined,
           campaign_id: campaignDbId,
           keyword_id: keywordAmazonId,
           text: kw.keywordText || '',
@@ -853,23 +873,23 @@ async function syncAccount(account) {
   }
 
   if (keywordRows.length > 0) {
-    let { error: insertKwErr } = await supabase
+    let { error: upsertKwErr } = await supabase
       .from('amazon_keywords')
-      .insert(keywordRows);
+      .upsert(keywordRows);
 
     // If FK to amazon_ad_groups fails for some reason, retry without ad_group_id
-    if (insertKwErr && insertKwErr.code === '23503') {
-      console.error('Insert keywords FK error, retrying without ad_group_id', insertKwErr);
+    if (upsertKwErr && upsertKwErr.code === '23503') {
+      console.error('Upsert keywords FK error, retrying without ad_group_id', upsertKwErr);
       const rowsWithoutAdGroup = keywordRows.map(({ ad_group_id, ...rest }) => rest);
-      ({ error: insertKwErr } = await supabase
+      ({ error: upsertKwErr } = await supabase
         .from('amazon_keywords')
-        .insert(rowsWithoutAdGroup));
+        .upsert(rowsWithoutAdGroup));
     }
 
-    if (insertKwErr) {
-      console.error('Insert keywords error', insertKwErr);
+    if (upsertKwErr) {
+      console.error('Upsert keywords error', upsertKwErr);
     } else {
-      console.log('Inserted', keywordRows.length, 'keyword rows.');
+      console.log('Upserted', keywordRows.length, 'keyword rows.');
     }
   }
 

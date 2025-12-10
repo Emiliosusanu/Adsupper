@@ -1,18 +1,25 @@
 import { supabase } from './supabaseClient.js';
 
-// Amazon Ads API Configuration
-const AMAZON_CLIENT_ID =
-  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_AMAZON_CLIENT_ID) ||
-  process.env.VITE_AMAZON_CLIENT_ID ||
-  process.env.AMAZON_CLIENT_ID;
-const AMAZON_CLIENT_SECRET =
-  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_AMAZON_CLIENT_SECRET) ||
-  process.env.VITE_AMAZON_CLIENT_SECRET ||
-  process.env.AMAZON_CLIENT_SECRET;
+// Amazon Ads API Configuration (works in both browser and Node)
+function readEnv(key) {
+  try {
+    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key] != null) {
+      return import.meta.env[key];
+    }
+  } catch {}
+  try {
+    if (typeof process !== 'undefined' && process.env && process.env[key] != null) {
+      return process.env[key];
+    }
+  } catch {}
+  return undefined;
+}
+
+const AMAZON_CLIENT_ID = readEnv('VITE_AMAZON_CLIENT_ID') || readEnv('AMAZON_CLIENT_ID');
+const AMAZON_CLIENT_SECRET = readEnv('VITE_AMAZON_CLIENT_SECRET') || readEnv('AMAZON_CLIENT_SECRET');
 const AMAZON_REDIRECT_URI =
-  (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_AMAZON_REDIRECT_URI) ||
-  process.env.VITE_AMAZON_REDIRECT_URI ||
-  process.env.AMAZON_REDIRECT_URI ||
+  readEnv('VITE_AMAZON_REDIRECT_URI') ||
+  readEnv('AMAZON_REDIRECT_URI') ||
   'http://localhost:5173/amazon-callback';
 
 // Amazon API endpoints
