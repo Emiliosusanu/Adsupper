@@ -217,12 +217,13 @@ async function logActions(account, rule, actions, resultsByKeyword) {
   const rows = actions.map((a) => {
     const r = resultsByKeyword.get(a.keywordAmazonId);
     const status = r?.status ?? 0;
+    const actionName = a.logAction || a.type;
 
     return {
       user_id: account.user_id,
       campaign_id: a.campaignId,
       keyword_id: a.keywordRowId,
-      action: a.type,
+      action: actionName,
       reason: `Rule ${rule.name}`,
       rule_id: rule.id,
       amazon_account_id: account.id,
@@ -230,7 +231,12 @@ async function logActions(account, rule, actions, resultsByKeyword) {
       entity_id: a.keywordAmazonId,
       details: {
         metrics_snapshot: a.metricsSnapshot,
-        action: a,
+        action: {
+          ui_action: actionName,
+          api_type: a.type,
+          current_bid: a.currentBid,
+          new_bid: a.newBid,
+        },
         api_status: status,
         api_response: r?.response ?? null,
       },
@@ -293,11 +299,28 @@ function buildActionsForRule(rule, account, keywordsForAccount) {
     if (!allMatch) continue;
 
     const currentBid = Number(kw.bid ?? 0) || 0;
-    let type = actionConf.type || settings.action || 'adjust_bid_percentage';
+    // settings.action is the user-facing action string from the UI
+    const uiAction = typeof settings.action === 'string'
+      ? settings.action
+      : (actionConf.type || 'adjust_bid_percentage');
+
+    // Map UI action to low-level API type
+    let type = uiAction;
+    if (uiAction === 'pause_keyword') {
+      type = 'pause';
+    } else if (uiAction === 'decrease_bid' || uiAction === 'increase_bid') {
+      type = 'adjust_bid_percentage';
+    }
+
     let newBid = currentBid;
 
     if (type === 'adjust_bid_percentage') {
-      const pct = Number(actionConf.value ?? settings.action_value ?? 0);
+      const rawPct = Number(actionConf.value ?? settings.action_value ?? 0) || 0;
+      const pct = uiAction === 'decrease_bid'
+        ? -Math.abs(rawPct)
+        : uiAction === 'increase_bid'
+        ? Math.abs(rawPct)
+        : rawPct;
       const raw = currentBid * (1 + pct / 100);
       const minBid = Number(actionConf.min_bid ?? 0.02);
       const maxBid = Number(actionConf.max_bid ?? 10.0);
@@ -305,7 +328,8 @@ function buildActionsForRule(rule, account, keywordsForAccount) {
     }
 
     const act = {
-      type: type === 'pause_keyword' ? 'pause' : type,
+      type,
+      logAction: uiAction,
       keywordAmazonId: String(kw.keyword_id),
       keywordRowId: kw.id,
       campaignId: kw.campaign_id,
