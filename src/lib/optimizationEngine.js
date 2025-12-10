@@ -1,5 +1,5 @@
-import { supabase } from './supabaseClient';
-import { amazonApi } from './amazonApi';
+import { supabase } from './supabaseClient.js';
+import { amazonApi } from './amazonApi.js';
 
 export class OptimizationEngine {
   constructor() {
@@ -69,6 +69,12 @@ export class OptimizationEngine {
     // Her kural için optimizasyon çalıştır
     for (const rule of rules) {
       try {
+        // Her kural için frekans kontrolü (settings.frequency_days veya settings.frequency_hours)
+        if (!this.shouldRunRule(rule)) {
+          console.log(`Skipping rule ${rule.name} - frequency not reached.`);
+          continue;
+        }
+
         await this.applyRule(account, rule);
         
         // Kuralın son çalışma zamanını güncelle
@@ -82,6 +88,34 @@ export class OptimizationEngine {
         await this.logError(account.id, 'rule_application', error.message, { rule_id: rule.id });
       }
     }
+  }
+
+  // Bir kuralın çalıştırılıp çalıştırılmaması gerektiğini belirle
+  shouldRunRule(rule) {
+    const settings = rule.settings || {};
+
+    // Öncelik: frequency_days, yoksa frequency_hours'u güne çevir
+    const frequencyDays = settings.frequency_days != null
+      ? Number(settings.frequency_days) || 0
+      : (settings.frequency_hours != null
+          ? (Number(settings.frequency_hours) || 0) / 24
+          : 1); // varsayılan: günde bir
+
+    if (frequencyDays <= 0) {
+      // 0 veya negatif ise her çalıştırmada uygula
+      return true;
+    }
+
+    if (!rule.last_run) {
+      return true;
+    }
+
+    const lastRun = new Date(rule.last_run).getTime();
+    const now = Date.now();
+    const hoursSinceLastRun = (now - lastRun) / (1000 * 60 * 60);
+    const requiredHours = frequencyDays * 24;
+
+    return hoursSinceLastRun >= requiredHours;
   }
 
   // Token'ın geçerliliğini kontrol et ve gerekirse yenile
@@ -133,7 +167,13 @@ export class OptimizationEngine {
     // Kampanya performans verilerini al
     const campaignIds = campaigns.map(c => c.campaignId);
     const endDate = new Date().toISOString().split('T')[0];
-    const startDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    // Kural bazlı lookback penceresi (kaç günlük veri analiz edilecek)
+    const lookbackDays = (rule.settings && rule.settings.lookback_days)
+      ? Number(rule.settings.lookback_days) || 7
+      : 7;
+    const startDate = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000)
+      .toISOString()
+      .split('T')[0];
 
     const performance = await amazonApi.getCampaignPerformance(
       account.access_token,
@@ -181,18 +221,29 @@ export class OptimizationEngine {
 
   // Koşulu değerlendir
   evaluateCondition(performance, settings) {
-    const metricValue = this.getMetricValue(performance, settings.metric);
-    
-    switch (settings.condition) {
-      case 'greater_than':
-        return metricValue > settings.threshold;
-      case 'less_than':
-        return metricValue < settings.threshold;
-      case 'equals':
-        return Math.abs(metricValue - settings.threshold) < 0.01;
-      default:
-        return false;
+    const conditions = (settings.conditions && settings.conditions.length > 0)
+      ? settings.conditions
+      : [{ metric: settings.metric, condition: settings.condition, threshold: settings.threshold }];
+
+    for (const cond of conditions) {
+      const metricValue = this.getMetricValue(performance, cond.metric);
+
+      switch (cond.condition) {
+        case 'greater_than':
+          if (!(metricValue > cond.threshold)) return false;
+          break;
+        case 'less_than':
+          if (!(metricValue < cond.threshold)) return false;
+          break;
+        case 'equals':
+          if (!(Math.abs(metricValue - cond.threshold) < 0.01)) return false;
+          break;
+        default:
+          return false;
+      }
     }
+
+    return true;
   }
 
   // Metrik değerini al
@@ -255,7 +306,11 @@ export class OptimizationEngine {
         entity_type: entityType,
         entity_id: entityId,
         action: rule.settings.action,
-        reason: `${rule.settings.metric} ${rule.settings.condition} ${rule.settings.threshold}`,
+        reason: (rule.settings.conditions && rule.settings.conditions.length > 0)
+          ? rule.settings.conditions
+              .map(c => `${c.metric} ${c.condition} ${c.threshold}`)
+              .join(' AND ')
+          : `${rule.settings.metric} ${rule.settings.condition} ${rule.settings.threshold}`,
         details: {
           performance,
           action_value: rule.settings.action_value,

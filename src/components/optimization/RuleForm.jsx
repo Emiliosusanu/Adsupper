@@ -25,7 +25,13 @@ const RuleForm = ({ onRuleCreated, onCancel }) => {
       action_value: 10,
       campaign_ids: [],
       ad_group_ids: [],
-      keyword_ids: []
+      keyword_ids: [],
+      conditions: [
+        { metric: 'acos', condition: 'greater_than', threshold: 40 }
+      ],
+      // Yeni zamanlama alanları: kuralın ne sıklıkla ve kaç günlük veriye göre çalışacağı
+      frequency_days: 1,
+      lookback_days: 7,
     }
   });
   const { toast } = useToast();
@@ -117,6 +123,92 @@ const RuleForm = ({ onRuleCreated, onCancel }) => {
     }
   };
 
+  const addCondition = () => {
+    setRuleData(prev => ({
+      ...prev,
+      settings: {
+        ...prev.settings,
+        conditions: [
+          ...(prev.settings.conditions && prev.settings.conditions.length > 0
+            ? prev.settings.conditions
+            : [{
+                metric: prev.settings.metric,
+                condition: prev.settings.condition,
+                threshold: prev.settings.threshold
+              }]),
+          { metric: 'acos', condition: 'greater_than', threshold: 40 }
+        ]
+      }
+    }));
+  };
+
+  const updateCondition = (index, field, value) => {
+    setRuleData(prev => {
+      const existingConditions = prev.settings.conditions && prev.settings.conditions.length > 0
+        ? prev.settings.conditions
+        : [{
+            metric: prev.settings.metric,
+            condition: prev.settings.condition,
+            threshold: prev.settings.threshold
+          }];
+
+      const newConditions = existingConditions.map((cond, i) =>
+        i === index ? { ...cond, [field]: value } : cond
+      );
+
+      const first = newConditions[0];
+
+      return {
+        ...prev,
+        settings: {
+          ...prev.settings,
+          metric: first.metric,
+          condition: first.condition,
+          threshold: first.threshold,
+          conditions: newConditions
+        }
+      };
+    });
+  };
+
+  const removeCondition = (index) => {
+    setRuleData(prev => {
+      const existingConditions = prev.settings.conditions && prev.settings.conditions.length > 0
+        ? prev.settings.conditions
+        : [{
+            metric: prev.settings.metric,
+            condition: prev.settings.condition,
+            threshold: prev.settings.threshold
+          }];
+
+      if (existingConditions.length <= 1) {
+        return prev;
+      }
+
+      const newConditions = existingConditions.filter((_, i) => i !== index);
+      const first = newConditions[0];
+
+      return {
+        ...prev,
+        settings: {
+          ...prev.settings,
+          metric: first.metric,
+          condition: first.condition,
+          threshold: first.threshold,
+          conditions: newConditions
+        }
+      };
+    });
+  };
+
+  const effectiveConditions = (ruleData.settings.conditions && ruleData.settings.conditions.length > 0)
+    ? ruleData.settings.conditions
+    : [{
+        metric: ruleData.settings.metric,
+        condition: ruleData.settings.condition,
+        threshold: ruleData.settings.threshold
+      }];
+
   return (
     <Card className="w-full max-w-2xl mx-auto">
       <CardHeader>
@@ -169,56 +261,75 @@ const RuleForm = ({ onRuleCreated, onCancel }) => {
           {/* Condition Settings */}
           <div className="space-y-4">
             <h3 className="text-lg font-semibold">Condition Settings</h3>
-            
-            <div className="grid grid-cols-3 gap-4">
-              <div>
-                <Label htmlFor="metric">Metric</Label>
-                <Select
-                  value={ruleData.settings.metric}
-                  onValueChange={(value) => updateRuleData('settings.metric', value)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="acos">ACOS</SelectItem>
-                    <SelectItem value="ctr">CTR</SelectItem>
-                    <SelectItem value="cpc">CPC</SelectItem>
-                    <SelectItem value="spend">Spend</SelectItem>
-                    <SelectItem value="orders">Orders</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+            {effectiveConditions.map((cond, index) => (
+              <div key={index} className="grid grid-cols-3 gap-4 items-end">
+                <div>
+                  <Label htmlFor={`metric-${index}`}>Metric</Label>
+                  <Select
+                    value={cond.metric}
+                    onValueChange={(value) => updateCondition(index, 'metric', value)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="acos">ACOS</SelectItem>
+                      <SelectItem value="ctr">CTR</SelectItem>
+                      <SelectItem value="cpc">CPC</SelectItem>
+                      <SelectItem value="spend">Spend</SelectItem>
+                      <SelectItem value="orders">Orders</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
 
-              <div>
-                <Label htmlFor="condition">Condition</Label>
-                <Select
-                  value={ruleData.settings.condition}
-                  onValueChange={(value) => updateRuleData('settings.condition', value)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="greater_than">Greater Than</SelectItem>
-                    <SelectItem value="less_than">Less Than</SelectItem>
-                    <SelectItem value="equals">Equals</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+                <div>
+                  <Label htmlFor={`condition-${index}`}>Condition</Label>
+                  <Select
+                    value={cond.condition}
+                    onValueChange={(value) => updateCondition(index, 'condition', value)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="greater_than">Greater Than</SelectItem>
+                      <SelectItem value="less_than">Less Than</SelectItem>
+                      <SelectItem value="equals">Equals</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
 
-              <div>
-                <Label htmlFor="threshold">Threshold Value</Label>
-                <Input
-                  id="threshold"
-                  type="number"
-                  step="0.01"
-                  value={ruleData.settings.threshold}
-                  onChange={(e) => updateRuleData('settings.threshold', parseFloat(e.target.value))}
-                  placeholder="40"
-                />
+                <div className="flex items-end space-x-2">
+                  <div className="flex-1">
+                    <Label htmlFor={`threshold-${index}`}>Threshold Value</Label>
+                    <Input
+                      id={`threshold-${index}`}
+                      type="number"
+                      step="0.01"
+                      value={cond.threshold}
+                      onChange={(e) => updateCondition(index, 'threshold', parseFloat(e.target.value))}
+                      placeholder="40"
+                    />
+                  </div>
+                  {effectiveConditions.length > 1 && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => removeCondition(index)}
+                    >
+                      Remove
+                    </Button>
+                  )}
+                </div>
               </div>
-            </div>
+            ))}
+            <Button
+              type="button"
+              variant="outline"
+              onClick={addCondition}
+            >
+              Add Condition
+            </Button>
           </div>
 
           {/* Action Settings */}
@@ -253,6 +364,45 @@ const RuleForm = ({ onRuleCreated, onCancel }) => {
                   step="0.1"
                   value={ruleData.settings.action_value}
                   onChange={(e) => updateRuleData('settings.action_value', parseFloat(e.target.value))}
+                  placeholder="10"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Schedule Settings */}
+          <div className="space-y-4">
+            <h3 className="text-lg font-semibold">Schedule Settings</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="frequency_days">Check Frequency (Days)</Label>
+                <Input
+                  id="frequency_days"
+                  type="number"
+                  min="1"
+                  value={ruleData.settings.frequency_days ?? 1}
+                  onChange={(e) =>
+                    updateRuleData(
+                      'settings.frequency_days',
+                      Number(e.target.value) > 0 ? Number(e.target.value) : 1,
+                    )
+                  }
+                  placeholder="1"
+                />
+              </div>
+              <div>
+                <Label htmlFor="lookback_days">Lookback Window (Days)</Label>
+                <Input
+                  id="lookback_days"
+                  type="number"
+                  min="1"
+                  value={ruleData.settings.lookback_days ?? 7}
+                  onChange={(e) =>
+                    updateRuleData(
+                      'settings.lookback_days',
+                      Number(e.target.value) > 0 ? Number(e.target.value) : 7,
+                    )
+                  }
                   placeholder="10"
                 />
               </div>

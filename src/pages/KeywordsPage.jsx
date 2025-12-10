@@ -496,13 +496,13 @@ const KeywordsPage = () => {
                         </span>
                       </TableCell>
                       <TableCell>{formatCurrency(kw.bid)}</TableCell>
-                      <TableCell>{formatCurrency(kw.raw_data?.spend)}</TableCell>
-                      <TableCell>{formatNumber(kw.raw_data?.impressions)}</TableCell>
-                      <TableCell>{formatNumber(kw.raw_data?.clicks)}</TableCell>
-                      <TableCell>{formatPercentage(kw.raw_data?.impressions > 0 ? (kw.raw_data?.clicks || 0) / kw.raw_data.impressions : 0)}</TableCell>
-                      <TableCell>{formatCurrency(kw.raw_data?.clicks > 0 ? (kw.raw_data?.spend || 0) / kw.raw_data.clicks : 0)}</TableCell>
-                      <TableCell>{formatNumber(kw.raw_data?.orders)}</TableCell>
-                      <TableCell>{formatPercentage(kw.raw_data?.sales > 0 ? (kw.raw_data?.spend || 0) / kw.raw_data.sales : 0)}</TableCell>
+                      <TableCell>{formatCurrency(kw.spend)}</TableCell>
+                      <TableCell>{formatNumber(kw.impressions)}</TableCell>
+                      <TableCell>{formatNumber(kw.clicks)}</TableCell>
+                      <TableCell>{formatPercentage(kw.impressions > 0 ? (kw.clicks || 0) / kw.impressions : 0)}</TableCell>
+                      <TableCell>{formatCurrency(kw.clicks > 0 ? (kw.spend || 0) / kw.clicks : 0)}</TableCell>
+                      <TableCell>{formatNumber(kw.orders)}</TableCell>
+                      <TableCell>{formatPercentage(kw.acos)}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
