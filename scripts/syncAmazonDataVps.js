@@ -438,6 +438,27 @@ async function syncAccount(account) {
   }
 
   const apiBase = regionApiBase(account.amazon_region);
+  // Helper: mid-sync token refresh and persist
+  async function refreshAndUpdateAccessToken() {
+    try {
+      const refreshed = await refreshAccessToken(refreshToken);
+      accessToken = refreshed.access_token;
+      const newExpiry = new Date(Date.now() + (refreshed.expires_in ?? 3600) * 1000).toISOString();
+      await supabase
+        .from('amazon_accounts')
+        .update({
+          access_token: refreshed.access_token,
+          refresh_token: refreshed.refresh_token,
+          token_expires_at: newExpiry,
+          updated_at: new Date().toISOString(),
+          status: 'active',
+        })
+        .eq('id', account.id);
+      console.log('Access token refreshed mid-sync for account', account.id);
+    } catch (e) {
+      console.error('Mid-sync token refresh failed:', e?.message || e);
+    }
+  }
   // Load existing metrics so we can carry them over if new reports are missing
   console.log('Deleting old data for account', account.id);
 
@@ -523,6 +544,16 @@ async function syncAccount(account) {
     DAYS_WINDOW,
     apiBase,
   );
+  // If empty (possible 401 during long polling), refresh and retry once
+  if (!metricsByCampaignId || metricsByCampaignId.size === 0) {
+    await refreshAndUpdateAccessToken();
+    metricsByCampaignId = await getCampaignMetrics(
+      String(account.amazon_profile_id),
+      accessToken,
+      DAYS_WINDOW,
+      apiBase,
+    );
+  }
 
   const campaignsToInsert = amazonCampaigns.map((c) => {
     const campaignKey = String(c.campaignId);
@@ -606,7 +637,7 @@ async function syncAccount(account) {
     if (!parentDbId) continue;
 
     try {
-      const agRes = await fetch(
+      let agRes = await fetch(
         `${apiBase}/v2/adGroups?campaignIdFilter=${campaignAmazonId}`,
         {
           headers: {
@@ -617,6 +648,21 @@ async function syncAccount(account) {
           },
         },
       );
+
+      if (!agRes.ok && agRes.status === 401) {
+        await refreshAndUpdateAccessToken();
+        agRes = await fetch(
+          `${apiBase}/v2/adGroups?campaignIdFilter=${campaignAmazonId}`,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Amazon-Advertising-API-ClientId': AMAZON_CLIENT_ID,
+              'Amazon-Advertising-API-Scope': String(account.amazon_profile_id),
+              'Content-Type': 'application/json',
+            },
+          },
+        );
+      }
 
       if (!agRes.ok) {
         console.error('Failed to fetch ad groups for campaign', campaignAmazonId, agRes.status);
@@ -674,7 +720,7 @@ async function syncAccount(account) {
     if (!adGroupDbId) continue;
 
     try {
-      const kwRes = await fetch(
+      let kwRes = await fetch(
         `${apiBase}/v2/keywords?adGroupIdFilter=${agAmazonId}`,
         {
           headers: {
@@ -685,6 +731,21 @@ async function syncAccount(account) {
           },
         },
       );
+
+      if (!kwRes.ok && kwRes.status === 401) {
+        await refreshAndUpdateAccessToken();
+        kwRes = await fetch(
+          `${apiBase}/v2/keywords?adGroupIdFilter=${agAmazonId}`,
+          {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              'Amazon-Advertising-API-ClientId': AMAZON_CLIENT_ID,
+              'Amazon-Advertising-API-Scope': String(account.amazon_profile_id),
+              'Content-Type': 'application/json',
+            },
+          },
+        );
+      }
 
       if (!kwRes.ok) {
         console.error('Failed to fetch keywords for ad group', agAmazonId, kwRes.status);
@@ -724,12 +785,21 @@ async function syncAccount(account) {
   // Enrich keywords with performance metrics
   if (keywordAmazonIds.length > 0) {
     console.log('Fetching keyword metrics via v3...');
-    const keywordMetricsById = await getKeywordMetrics(
+    let keywordMetricsById = await getKeywordMetrics(
       String(account.amazon_profile_id),
       accessToken,
       DAYS_WINDOW,
       apiBase,
     );
+    if (!keywordMetricsById || keywordMetricsById.size === 0) {
+      await refreshAndUpdateAccessToken();
+      keywordMetricsById = await getKeywordMetrics(
+        String(account.amazon_profile_id),
+        accessToken,
+        DAYS_WINDOW,
+        apiBase,
+      );
+    }
 
     if (keywordMetricsById && keywordMetricsById.size > 0) {
       for (const row of keywordRows) {
