@@ -694,9 +694,19 @@ async function syncAccount(account) {
   }
 
   if (keywordRows.length > 0) {
-    const { error: insertKwErr } = await supabase
+    let { error: insertKwErr } = await supabase
       .from('amazon_keywords')
       .insert(keywordRows);
+
+    // If FK to amazon_ad_groups fails for some reason, retry without ad_group_id
+    if (insertKwErr && insertKwErr.code === '23503') {
+      console.error('Insert keywords FK error, retrying without ad_group_id', insertKwErr);
+      const rowsWithoutAdGroup = keywordRows.map(({ ad_group_id, ...rest }) => rest);
+      ({ error: insertKwErr } = await supabase
+        .from('amazon_keywords')
+        .insert(rowsWithoutAdGroup));
+    }
+
     if (insertKwErr) {
       console.error('Insert keywords error', insertKwErr);
     } else {
