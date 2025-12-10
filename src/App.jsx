@@ -68,8 +68,12 @@ function App() {
     <Router>
       <div className="min-h-screen flex flex-col bg-background text-foreground">
         {user && <TopNavigation navItems={navItems} user={user} />} 
-        <main className="flex-grow pt-16 transition-all duration-300 ease-in-out"> 
-          <div className="p-4 sm:p-6 lg:p-8">
+        <main
+          className={`flex-grow transition-all duration-300 ease-in-out ${
+            user ? 'pt-16' : ''
+          }`}
+        >
+          <div className={user ? 'p-4 sm:p-6 lg:p-8' : ''}>
             <Routes>
               <Route path="/auth" element={user ? <Navigate to="/" /> : <AuthPage />} />
               <Route path="/amazon-callback" element={<AmazonCallbackPage />} />

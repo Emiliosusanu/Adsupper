@@ -221,49 +221,18 @@ const KeywordsPage = () => {
     }
     setSyncingAccount(accountId);
     setShowSimulatedData(false);
-    toast({ title: "Sync Initiated", description: "Fetching latest Keyword data from Amazon. This may take a few minutes." });
+    toast({
+      title: "Refreshing",
+      description: "Reloading latest keyword data from the database. Server-side sync runs on the VPS.",
+    });
     try {
-      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-      if (sessionError || !sessionData.session) {
-        toast({ title: "Authentication Error", description: "Your session is invalid. Please log in again.", variant: "destructive" });
-        setSyncingAccount(null);
-        return;
-      }
-      const accessToken = sessionData.session.access_token;
-
-      const { data: funcData, error: funcError } = await supabase.functions.invoke('fetch-amazon-data', {
-        headers: { Authorization: `Bearer ${accessToken}` },
-        body: { account_id: accountId, action: 'sync_all_data' },
-      });
-      if (funcError) throw funcError;
-      
-      const message = funcData?.message || "Data fetching process completed.";
-      const variant = funcData?.success ? "default" : "destructive";
-      const needsReauth = funcData?.needsReauth || false;
-      const newStatus = needsReauth ? 'reauth_required' : (funcData?.success ? 'active' : currentAccountStatus);
-      
-      toast({ title: funcData?.success ? "Sync Successful" : "Sync Info", description: message, variant: variant, className: funcData?.success ? "bg-green-600 text-white" : "" });
-      
-      fetchKeywords();
-      fetchAdGroupsForAccount();
-
-      const updatedAccounts = linkedAccounts.map(acc => 
-        acc.id === accountId ? { ...acc, last_sync: new Date().toISOString(), status: newStatus } : acc
-      );
-      setLinkedAccounts(updatedAccounts);
-      if(accountId === selectedAccountId) setCurrentAccountStatus(newStatus);
-      if (!funcData?.success || needsReauth) setShowSimulatedData(false);
-
+      await fetchKeywords();
+      await fetchAdGroupsForAccount();
     } catch (error) {
-      console.error("Sync Error:", error);
-      const errorMessage = error.message || (error.context?.message) || 'Unknown error during sync.';
-      toast({ title: "Sync Error", description: `Failed to sync keyword data: ${errorMessage}`, variant: "destructive" });
+      console.error("Refresh Error:", error);
+      const errorMessage = error.message || 'Unknown error during refresh.';
+      toast({ title: "Refresh Error", description: `Failed to refresh keyword data: ${errorMessage}`, variant: "destructive" });
       setShowSimulatedData(false);
-       if (error.context?.status === 401 || error.message.includes("reauth_required") || error.message.includes("Amazon Profile ID is missing")) {
-         const updatedAccounts = linkedAccounts.map(acc => acc.id === accountId ? { ...acc, status: 'reauth_required' } : acc);
-         setLinkedAccounts(updatedAccounts);
-         if(accountId === selectedAccountId) setCurrentAccountStatus('reauth_required');
-      }
     } finally {
       setSyncingAccount(null);
     }
