@@ -32,6 +32,13 @@ const AdGroupsPage = () => {
   const [user, setUser] = useState(null);
   const navigate = useNavigate();
 
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [editedBids, setEditedBids] = useState({});
+  const [editedStatuses, setEditedStatuses] = useState({});
+  const [batchBid, setBatchBid] = useState('');
+  const [batchStatus, setBatchStatus] = useState('');
+  const [applying, setApplying] = useState(false);
+
 
   const pageVariants = {
     initial: { opacity: 0, y: 20 },
@@ -259,6 +266,130 @@ const AdGroupsPage = () => {
     setSelectedCampaignId('');
   };
 
+  const toggleSelected = (id, checked) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id); else next.delete(id);
+      return next;
+    });
+  };
+
+  const handleBidChange = (id, value) => {
+    setEditedBids((prev) => ({ ...prev, [id]: value }));
+  };
+
+  const handleStatusChange = (id, value) => {
+    setEditedStatuses((prev) => ({ ...prev, [id]: value }));
+  };
+
+  const callUpdate = async (type, items) => {
+    const baseUrl = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_OPTIMIZATION_SERVER_URL)
+      || (typeof process !== 'undefined' && process.env && process.env.OPTIMIZATION_SERVER_URL)
+      || 'http://localhost:3001';
+    const res = await fetch(`${baseUrl}/amazon/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId: selectedAccountId, type, items }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || json.status !== 'success') throw new Error(json.message || `HTTP ${res.status}`);
+  };
+
+  const applyRow = async (row) => {
+    setApplying(true);
+    try {
+      const ops = [];
+      if (editedBids[row.id] != null && editedBids[row.id] !== '') {
+        const num = Number(editedBids[row.id]);
+        if (Number.isNaN(num)) throw new Error('Invalid bid');
+        ops.push(callUpdate('adgroup', [{ amazonId: row.amazon_ad_group_id, value: num }]));
+      }
+      if (editedStatuses[row.id]) {
+        ops.push(callUpdate('adgroup_status', [{ amazonId: row.amazon_ad_group_id, value: String(editedStatuses[row.id]) }]));
+      }
+      if (ops.length === 0) return;
+      await Promise.all(ops);
+      toast({ title: 'Applied', description: 'Ad group updated', variant: 'default' });
+      await fetchAdGroups();
+    } catch (e) {
+      toast({ title: 'Apply failed', description: String(e.message || e), variant: 'destructive' });
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const applyBatchBid = async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) { toast({ title: 'No selection', description: 'Select rows first', variant: 'destructive' }); return; }
+    const num = Number(batchBid);
+    if (Number.isNaN(num)) { toast({ title: 'Invalid bid', description: 'Enter a number', variant: 'destructive' }); return; }
+    setApplying(true);
+    try {
+      const items = adGroups.filter((r) => ids.includes(r.id)).map((r) => ({ amazonId: r.amazon_ad_group_id, value: num }));
+      await callUpdate('adgroup', items);
+      toast({ title: 'Applied', description: `Updated ${items.length} ad group(s)`, variant: 'default' });
+      await fetchAdGroups();
+    } catch (e) {
+      toast({ title: 'Apply failed', description: String(e.message || e), variant: 'destructive' });
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const applyBatchStatus = async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) { toast({ title: 'No selection', description: 'Select rows first', variant: 'destructive' }); return; }
+    if (!batchStatus) { toast({ title: 'Missing status', description: 'Choose a status', variant: 'destructive' }); return; }
+    setApplying(true);
+    try {
+      const items = adGroups.filter((r) => ids.includes(r.id)).map((r) => ({ amazonId: r.amazon_ad_group_id, value: batchStatus }));
+      await callUpdate('adgroup_status', items);
+      toast({ title: 'Applied', description: `Updated ${items.length} ad group(s)`, variant: 'default' });
+      await fetchAdGroups();
+    } catch (e) {
+      toast({ title: 'Apply failed', description: String(e.message || e), variant: 'destructive' });
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const exportCsv = () => {
+    const rows = filteredAdGroups;
+    const headers = ['name','status','default_bid','spend','impressions','clicks','ctr','cpc','orders','acos','campaign_name','amazon_ad_group_id'];
+    const lines = [headers.join(',')];
+    for (const r of rows) {
+      const spend = r.raw_data?.spend ?? '';
+      const impressions = r.raw_data?.impressions ?? '';
+      const clicks = r.raw_data?.clicks ?? '';
+      const orders = r.raw_data?.orders ?? '';
+      const sales = r.raw_data?.sales ?? 0;
+      const ctr = impressions > 0 ? (clicks || 0) / impressions : 0;
+      const cpc = clicks > 0 ? (spend || 0) / clicks : 0;
+      const acos = sales > 0 ? (spend || 0) / sales : 0;
+      const cells = [
+        r.name ?? '',
+        r.status ?? '',
+        r.default_bid ?? '',
+        spend,
+        impressions,
+        clicks,
+        ctr,
+        cpc,
+        orders,
+        acos,
+        r.amazon_campaigns?.name ?? '',
+        r.amazon_ad_group_id ?? '',
+      ];
+      lines.push(cells.map((c) => ("\"" + String(c).replaceAll('"','""') + "\"" )).join(','));
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'ad-groups.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <motion.div 
@@ -351,6 +482,20 @@ const AdGroupsPage = () => {
               />
             </div>
           </div>
+          <div className="mt-4 flex flex-col sm:flex-row items-center gap-2">
+            <Input type="number" step="0.01" placeholder="Batch bid" value={batchBid} onChange={(e) => setBatchBid(e.target.value)} className="w-full sm:w-[160px] bg-slate-700 border-slate-600 text-slate-100" />
+            <Button onClick={applyBatchBid} disabled={applying || selectedIds.size === 0} className="bg-emerald-600 hover:bg-emerald-700 text-white">Apply Bids</Button>
+            <Select onValueChange={setBatchStatus} value={batchStatus}>
+              <SelectTrigger className="w-full sm:w-[160px] bg-slate-700 border-slate-600 text-slate-100"><SelectValue placeholder="Set status" /></SelectTrigger>
+              <SelectContent className="bg-slate-800 text-slate-100 border-slate-700">
+                <SelectItem value="enabled">enabled</SelectItem>
+                <SelectItem value="paused">paused</SelectItem>
+                <SelectItem value="archived">archived</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button onClick={applyBatchStatus} disabled={applying || !batchStatus || selectedIds.size === 0} className="bg-amber-600 hover:bg-amber-700 text-white">Apply Status</Button>
+            <Button onClick={exportCsv} variant="secondary" className="bg-slate-700 text-slate-100">Export CSV</Button>
+          </div>
         </CardHeader>
         <CardContent>
           {loadingData && selectedAccountId && currentAccountStatus !== 'reauth_required' && currentAccountStatus !== 'error_no_profile' && currentAccountStatus !== 'error_no_region' ? (
@@ -406,6 +551,12 @@ const AdGroupsPage = () => {
               <Table>
                 <TableHeader>
                   <TableRow className="border-slate-700">
+                    <TableHead className="w-[36px]">
+                      <input type="checkbox" onChange={(e) => {
+                        const all = new Set(e.target.checked ? filteredAdGroups.map(r => r.id) : []);
+                        setSelectedIds(all);
+                      }} checked={filteredAdGroups.length > 0 && filteredAdGroups.every(r => selectedIds.has(r.id))} />
+                    </TableHead>
                     {['name', 'status', 'default_bid', 'spend', 'impressions', 'clicks', 'ctr', 'cpc', 'orders', 'acos'].map(key => (
                        <TableHead key={key} onClick={() => handleSort(key)} className="cursor-pointer hover:bg-slate-700/50 transition-colors text-slate-300">
                          <div className="flex items-center">
@@ -414,11 +565,15 @@ const AdGroupsPage = () => {
                          </div>
                        </TableHead>
                     ))}
+                    <TableHead>New bid</TableHead>
+                    <TableHead>Set status</TableHead>
+                    <TableHead>Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredAdGroups.map((ag) => (
                     <TableRow key={ag.id} className="border-slate-700 hover:bg-slate-700/30">
+                      <TableCell><input type="checkbox" checked={selectedIds.has(ag.id)} onChange={(e) => toggleSelected(ag.id, e.target.checked)} /></TableCell>
                       <TableCell className="font-medium text-purple-300 min-w-[200px] break-all" title={ag.name}>{ag.name} <span className="text-xs text-slate-500">({ag.amazon_campaigns?.name || 'N/A'})</span></TableCell>
                       <TableCell>
                         <span className={`px-2 py-1 text-xs rounded-full ${
@@ -437,6 +592,22 @@ const AdGroupsPage = () => {
                       <TableCell>{formatCurrency(ag.raw_data?.clicks > 0 ? (ag.raw_data?.spend || 0) / ag.raw_data.clicks : 0)}</TableCell>
                       <TableCell>{formatNumber(ag.raw_data?.orders)}</TableCell>
                       <TableCell>{formatPercentage(ag.raw_data?.sales > 0 ? (ag.raw_data?.spend || 0) / ag.raw_data.sales : 0)}</TableCell>
+                      <TableCell>
+                        <Input type="number" step="0.01" value={editedBids[ag.id] ?? ag.default_bid ?? ''} onChange={(e) => handleBidChange(ag.id, e.target.value)} className="w-28 bg-slate-700 border-slate-600 text-slate-100" />
+                      </TableCell>
+                      <TableCell>
+                        <Select onValueChange={(v) => handleStatusChange(ag.id, v)} value={editedStatuses[ag.id] ?? ''}>
+                          <SelectTrigger className="w-[140px] bg-slate-700 border-slate-600 text-slate-100"><SelectValue placeholder="choose" /></SelectTrigger>
+                          <SelectContent className="bg-slate-800 text-slate-100 border-slate-700">
+                            <SelectItem value="enabled">enabled</SelectItem>
+                            <SelectItem value="paused">paused</SelectItem>
+                            <SelectItem value="archived">archived</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+                      <TableCell>
+                        <Button onClick={() => applyRow(ag)} disabled={applying} className="bg-emerald-600 hover:bg-emerald-700 text-white">Apply</Button>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

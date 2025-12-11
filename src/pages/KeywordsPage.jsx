@@ -9,6 +9,7 @@ import { motion } from 'framer-motion';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from '@/components/ui/input';
 import { useNavigate } from 'react-router-dom';
+import { OPTIMIZATION_SERVER_URL } from '@/lib/config';
 
 const generateSimulatedKeywords = (count = 20, adGroupId = 'sim-ag-1') => {
   const statuses = ['enabled', 'paused', 'enabled', 'archived'];
@@ -66,6 +67,12 @@ const KeywordsPage = () => {
   const [user, setUser] = useState(null);
   const navigate = useNavigate();
   const [showSimulatedData, setShowSimulatedData] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [editedBids, setEditedBids] = useState({});
+  const [editedStatuses, setEditedStatuses] = useState({});
+  const [batchBid, setBatchBid] = useState('');
+  const [batchStatus, setBatchStatus] = useState('');
+  const [applying, setApplying] = useState(false);
 
   const pageVariants = {
     initial: { opacity: 0, y: 20 },
@@ -293,6 +300,121 @@ const KeywordsPage = () => {
     setShowSimulatedData(false);
   };
 
+  const toggleSelected = (id, checked) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id); else next.delete(id);
+      return next;
+    });
+  };
+
+  const handleBidChange = (id, value) => {
+    setEditedBids((prev) => ({ ...prev, [id]: value }));
+  };
+
+  const handleStatusChange = (id, value) => {
+    setEditedStatuses((prev) => ({ ...prev, [id]: value }));
+  };
+
+  const callUpdate = async (type, items) => {
+    const res = await fetch(`${OPTIMIZATION_SERVER_URL}/amazon/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId: selectedAccountId, type, items }),
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || json.status !== 'success') throw new Error(json.message || `HTTP ${res.status}`);
+  };
+
+  const applyRow = async (row) => {
+    setApplying(true);
+    try {
+      const ops = [];
+      if (editedBids[row.id] != null && editedBids[row.id] !== '') {
+        const num = Number(editedBids[row.id]);
+        if (Number.isNaN(num)) throw new Error('Invalid bid');
+        ops.push(callUpdate('keyword', [{ amazonId: row.amazon_keyword_id, value: num }]));
+      }
+      if (editedStatuses[row.id]) {
+        ops.push(callUpdate('keyword_status', [{ amazonId: row.amazon_keyword_id, value: String(editedStatuses[row.id]) }]));
+      }
+      if (ops.length === 0) return;
+      await Promise.all(ops);
+      toast({ title: 'Applied', description: 'Keyword updated', variant: 'default' });
+      await fetchKeywords();
+    } catch (e) {
+      toast({ title: 'Apply failed', description: String(e.message || e), variant: 'destructive' });
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const applyBatchBid = async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) { toast({ title: 'No selection', description: 'Select rows first', variant: 'destructive' }); return; }
+    const num = Number(batchBid);
+    if (Number.isNaN(num)) { toast({ title: 'Invalid bid', description: 'Enter a number', variant: 'destructive' }); return; }
+    setApplying(true);
+    try {
+      const items = keywords.filter((r) => ids.includes(r.id)).map((r) => ({ amazonId: r.amazon_keyword_id, value: num }));
+      await callUpdate('keyword', items);
+      toast({ title: 'Applied', description: `Updated ${items.length} keyword(s)`, variant: 'default' });
+      await fetchKeywords();
+    } catch (e) {
+      toast({ title: 'Apply failed', description: String(e.message || e), variant: 'destructive' });
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const applyBatchStatus = async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) { toast({ title: 'No selection', description: 'Select rows first', variant: 'destructive' }); return; }
+    if (!batchStatus) { toast({ title: 'Missing status', description: 'Choose a status', variant: 'destructive' }); return; }
+    setApplying(true);
+    try {
+      const items = keywords.filter((r) => ids.includes(r.id)).map((r) => ({ amazonId: r.amazon_keyword_id, value: batchStatus }));
+      await callUpdate('keyword_status', items);
+      toast({ title: 'Applied', description: `Updated ${items.length} keyword(s)`, variant: 'default' });
+      await fetchKeywords();
+    } catch (e) {
+      toast({ title: 'Apply failed', description: String(e.message || e), variant: 'destructive' });
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const exportCsv = () => {
+    const rows = filteredKeywords;
+    const headers = ['text','match_type','status','bid','spend','impressions','clicks','ctr','cpc','orders','acos','ad_group_name','amazon_keyword_id'];
+    const lines = [headers.join(',')];
+    for (const r of rows) {
+      const cells = [
+        r.text ?? '',
+        r.match_type ?? '',
+        r.status ?? '',
+        r.bid ?? '',
+        r.spend ?? '',
+        r.impressions ?? '',
+        r.clicks ?? '',
+        (r.impressions > 0 ? (r.clicks || 0) / r.impressions : 0),
+        (r.clicks > 0 ? (r.spend || 0) / r.clicks : 0),
+        r.orders ?? '',
+        r.acos ?? '',
+        r.amazon_ad_groups?.name ?? '',
+        r.amazon_keyword_id ?? '',
+      ];
+      lines.push(cells.map((c) => ("\"" + String(c).replaceAll('"','""') + "\"" )).join(','));
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'keywords.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
 
   return (
     <motion.div 
@@ -340,6 +462,20 @@ const KeywordsPage = () => {
               <CardDescription className="text-slate-400">
                 View and manage your Amazon Advertising keywords. Last sync: {linkedAccounts.find(acc => acc.id === selectedAccountId)?.last_sync ? new Date(linkedAccounts.find(acc => acc.id === selectedAccountId)?.last_sync).toLocaleString() : 'Never'}
               </CardDescription>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+              <Input type="number" step="0.01" placeholder="Batch bid" value={batchBid} onChange={(e) => setBatchBid(e.target.value)} className="w-full sm:w-[140px] bg-slate-700 border-slate-600 text-slate-100" />
+              <Button onClick={applyBatchBid} disabled={applying || selectedIds.size === 0} className="bg-emerald-600 hover:bg-emerald-700 text-white">Apply Bids</Button>
+              <Select onValueChange={setBatchStatus} value={batchStatus}>
+                <SelectTrigger className="w-full sm:w-[160px] bg-slate-700 border-slate-600 text-slate-100"><SelectValue placeholder="Set status" /></SelectTrigger>
+                <SelectContent className="bg-slate-800 text-slate-100 border-slate-700">
+                  <SelectItem value="enabled">enabled</SelectItem>
+                  <SelectItem value="paused">paused</SelectItem>
+                  <SelectItem value="archived">archived</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button onClick={applyBatchStatus} disabled={applying || !batchStatus || selectedIds.size === 0} className="bg-amber-600 hover:bg-amber-700 text-white">Apply Status</Button>
+              <Button onClick={exportCsv} variant="secondary" className="bg-slate-700 text-slate-100">Export CSV</Button>
             </div>
              <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
               {loadingAccounts ? (<Loader2 size={24} className="animate-spin text-purple-400"/>) : linkedAccounts.length > 0 ? (
@@ -440,6 +576,12 @@ const KeywordsPage = () => {
               <Table>
                 <TableHeader>
                   <TableRow className="border-slate-700">
+                    <TableHead className="w-[36px]">
+                      <input type="checkbox" onChange={(e) => {
+                        const all = new Set(e.target.checked ? filteredKeywords.map(r => r.id) : []);
+                        setSelectedIds(all);
+                      }} checked={filteredKeywords.length > 0 && filteredKeywords.every(r => selectedIds.has(r.id))} />
+                    </TableHead>
                     {['text', 'match_type', 'status', 'bid', 'spend', 'impressions', 'clicks', 'ctr', 'cpc', 'orders', 'acos'].map(key => (
                        <TableHead key={key} onClick={() => handleSort(key)} className="cursor-pointer hover:bg-slate-700/50 transition-colors text-slate-300">
                          <div className="flex items-center">
@@ -448,11 +590,15 @@ const KeywordsPage = () => {
                          </div>
                        </TableHead>
                     ))}
+                    <TableHead>New bid</TableHead>
+                    <TableHead>Set status</TableHead>
+                    <TableHead>Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filteredKeywords.map((kw) => (
                     <TableRow key={kw.id} className="border-slate-700 hover:bg-slate-700/30">
+                      <TableCell><input type="checkbox" checked={selectedIds.has(kw.id)} onChange={(e) => toggleSelected(kw.id, e.target.checked)} /></TableCell>
                       <TableCell className="font-medium text-purple-300 min-w-[150px] break-all" title={kw.text}>{kw.text} <span className="text-xs text-slate-500">({kw.amazon_ad_groups?.name || 'N/A'})</span></TableCell>
                       <TableCell>{kw.match_type}</TableCell>
                       <TableCell>
@@ -472,6 +618,22 @@ const KeywordsPage = () => {
                       <TableCell>{formatCurrency(kw.clicks > 0 ? (kw.spend || 0) / kw.clicks : 0)}</TableCell>
                       <TableCell>{formatNumber(kw.orders)}</TableCell>
                       <TableCell>{formatPercentage(kw.acos)}</TableCell>
+                      <TableCell>
+                        <Input type="number" step="0.01" value={editedBids[kw.id] ?? kw.bid ?? ''} onChange={(e) => handleBidChange(kw.id, e.target.value)} className="w-28 bg-slate-700 border-slate-600 text-slate-100" />
+                      </TableCell>
+                      <TableCell>
+                        <Select onValueChange={(v) => handleStatusChange(kw.id, v)} value={editedStatuses[kw.id] ?? ''}>
+                          <SelectTrigger className="w-[140px] bg-slate-700 border-slate-600 text-slate-100"><SelectValue placeholder="choose" /></SelectTrigger>
+                          <SelectContent className="bg-slate-800 text-slate-100 border-slate-700">
+                            <SelectItem value="enabled">enabled</SelectItem>
+                            <SelectItem value="paused">paused</SelectItem>
+                            <SelectItem value="archived">archived</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </TableCell>
+                      <TableCell>
+                        <Button onClick={() => applyRow(kw)} disabled={applying} className="bg-emerald-600 hover:bg-emerald-700 text-white">Apply</Button>
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

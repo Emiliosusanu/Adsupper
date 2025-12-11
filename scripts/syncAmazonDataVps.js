@@ -45,6 +45,18 @@ const STRICT_ONLY_REPORTS = (() => {
 })();
 // Daemon mode: when >0, run sync in a loop with this sleep in minutes between cycles
 const SYNC_LOOP_MIN = Number(process.env.SYNC_LOOP_MIN || 0);
+// Stream structure upserts as we fetch (faster perceived availability)
+const STREAM_UPSERTS = (() => {
+  const v = process.env.STREAM_UPSERTS;
+  if (v == null) return true; // default ON
+  return v === '1' || v === 'true' || v === 'TRUE';
+})();
+// Rolling schedule (30d weekly/daily strategy) executed by the daemon loop
+const ROLLING_SCHEDULE = (() => {
+  const v = process.env.ROLLING_SCHEDULE;
+  if (v == null) return true; // default ON
+  return v === '1' || v === 'true' || v === 'TRUE';
+})();
 
 // Region-aware base selection
 function normalizeRegion(region) {
@@ -221,11 +233,19 @@ async function getCampaignMetrics(profileId, accessToken, daysWindow, apiBase) {
           'Amazon-Advertising-API-Scope': String(profileId),
         },
       });
+      if (pollRes.status === 401) {
+        console.warn('Campaign report poll received 401 (token expired). Breaking to refresh...');
+        break;
+      }
       const pollJson = await pollRes.json().catch(() => ({}));
       lastPoll = pollJson;
       if (i === 0 || i % Math.max(1, Math.floor(30000 / REPORT_POLL_INTERVAL_MS)) === 0) {
         const sec = Math.round((Date.now() - startedAt) / 1000);
         console.log(`Campaign report poll #${i + 1}/${infiniteWait ? '∞' : maxPolls} (${sec}s): status=${pollJson.status || 'UNKNOWN'}`);
+      }
+      if (pollJson?.message && /unauthorized|invalid token/i.test(String(pollJson.message))) {
+        console.warn('Campaign report poll message indicates unauthorized token; breaking to refresh...');
+        break;
       }
       if (pollJson.status === 'SUCCESS' || pollJson.status === 'COMPLETED') {
         downloadUrl = pollJson.location || pollJson.url || null;
@@ -363,11 +383,19 @@ async function getKeywordMetrics(profileId, accessToken, daysWindow, apiBase) {
           'Amazon-Advertising-API-Scope': String(profileId),
         },
       });
+      if (pollRes.status === 401) {
+        console.warn('Keyword report poll received 401 (token expired). Breaking to refresh...');
+        break;
+      }
       const pollJson = await pollRes.json().catch(() => ({}));
       lastPoll = pollJson;
       if (i === 0 || i % Math.max(1, Math.floor(30000 / REPORT_POLL_INTERVAL_MS)) === 0) {
         const sec = Math.round((Date.now() - startedAt) / 1000);
         console.log(`Keyword report poll #${i + 1}/${infiniteWait ? '∞' : maxPolls} (${sec}s): status=${pollJson.status || 'UNKNOWN'}`);
+      }
+      if (pollJson?.message && /unauthorized|invalid token/i.test(String(pollJson.message))) {
+        console.warn('Keyword report poll message indicates unauthorized token; breaking to refresh...');
+        break;
       }
       if (pollJson.status === 'SUCCESS' || pollJson.status === 'COMPLETED') {
         downloadUrl = pollJson.location || pollJson.url || null;
@@ -419,7 +447,7 @@ async function getKeywordMetrics(profileId, accessToken, daysWindow, apiBase) {
 
 // ---- Main sync per account ----
 
-async function syncAccount(account) {
+async function syncAccount(account, windowDays) {
   console.log(`\n=== Syncing account ${account.id} (${account.name || ''}) ===`);
 
   let accessToken = account.access_token;
@@ -565,9 +593,13 @@ async function syncAccount(account) {
     }
   }
 
+  let insertedAdGroups = [];
+  const adGroupIdMap = new Map();
+  for (const [k, v] of existingAdGroupIdMap.entries()) adGroupIdMap.set(String(k), v);
+
   // Fetch campaigns from Amazon v2
   console.log('Fetching campaigns from Amazon...');
-  const campaignsRes = await fetch(`${apiBase}/v2/campaigns`, {
+  let campaignsRes = await fetch(`${apiBase}/v2/campaigns`, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Amazon-Advertising-API-ClientId': AMAZON_CLIENT_ID,
@@ -575,6 +607,18 @@ async function syncAccount(account) {
       'Content-Type': 'application/json',
     },
   });
+
+  if (!campaignsRes.ok && campaignsRes.status === 401) {
+    await refreshAndUpdateAccessToken();
+    campaignsRes = await fetch(`${apiBase}/v2/campaigns`, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Amazon-Advertising-API-ClientId': AMAZON_CLIENT_ID,
+        'Amazon-Advertising-API-Scope': String(account.amazon_profile_id),
+        'Content-Type': 'application/json',
+      },
+    });
+  }
 
   if (!campaignsRes.ok) {
     const text = await campaignsRes.text().catch(() => '');
@@ -585,22 +629,35 @@ async function syncAccount(account) {
   const amazonCampaigns = await campaignsRes.json();
   console.log('Fetched', amazonCampaigns.length, 'campaigns.');
 
+  // Kick off metrics reports in parallel (to overlap long v3 report generation)
+  const campaignMetricsPromise = SKIP_METRICS
+    ? Promise.resolve(new Map())
+    : getCampaignMetrics(
+        String(account.amazon_profile_id),
+        accessToken,
+        windowDays || DAYS_WINDOW,
+        apiBase,
+      );
+  const keywordMetricsPromise = SKIP_METRICS
+    ? Promise.resolve(new Map())
+    : getKeywordMetrics(
+        String(account.amazon_profile_id),
+        accessToken,
+        windowDays || DAYS_WINDOW,
+        apiBase,
+      );
+
   // Metrics via v3 (unless SKIP_METRICS)
   let metricsByCampaignId = new Map();
   if (!SKIP_METRICS) {
-    metricsByCampaignId = await getCampaignMetrics(
-      String(account.amazon_profile_id),
-      accessToken,
-      DAYS_WINDOW,
-      apiBase,
-    );
+    metricsByCampaignId = await campaignMetricsPromise;
     // If empty (possible 401 during long polling), refresh and retry once
     if (!metricsByCampaignId || metricsByCampaignId.size === 0) {
       await refreshAndUpdateAccessToken();
       metricsByCampaignId = await getCampaignMetrics(
         String(account.amazon_profile_id),
         accessToken,
-        DAYS_WINDOW,
+        windowDays || DAYS_WINDOW,
         apiBase,
       );
     }
@@ -691,6 +748,8 @@ async function syncAccount(account) {
   console.log('Fetching ad groups...');
   const adGroupRows = [];
   const adGroupAmazonToCampaignAmazon = new Map();
+  let keywordRows = [];
+  let keywordAmazonIds = [];
 
   for (const c of amazonCampaigns) {
     const campaignAmazonId = String(c.campaignId);
@@ -731,9 +790,10 @@ async function syncAccount(account) {
       }
 
       const agJson = await agRes.json();
+      const perAgRows = [];
       for (const ag of agJson) {
         const agAmazonId = String(ag.adGroupId);
-        adGroupRows.push({
+        const row = {
           account_id: account.id,
           campaign_id: parentDbId,
           name: ag.name || `Ad Group ${ag.adGroupId}`,
@@ -742,15 +802,124 @@ async function syncAccount(account) {
           amazon_profile_id_text: String(account.amazon_profile_id),
           amazon_region: account.amazon_region || null,
           amazon_ad_group_id: agAmazonId,
-        });
+        };
+        if (STREAM_UPSERTS) {
+          perAgRows.push(row);
+        } else {
+          adGroupRows.push(row);
+        }
         adGroupAmazonToCampaignAmazon.set(agAmazonId, campaignAmazonId);
+      }
+
+      if (STREAM_UPSERTS && perAgRows.length > 0) {
+        const { data: agData, error: upsertAgErr } = await supabase
+          .from('amazon_ad_groups')
+          .upsert(perAgRows)
+          .select('id, amazon_ad_group_id');
+        if (upsertAgErr) {
+          console.error('Upsert ad groups error', upsertAgErr);
+        } else {
+          insertedAdGroups.push(...(agData || []));
+          for (const ag of agData || []) adGroupIdMap.set(String(ag.amazon_ad_group_id), ag.id);
+          console.log('Upserted', (agData || []).length, 'ad group rows (stream).');
+        }
+
+        // Stream keywords for these ad groups (structure + carry-over metrics)
+        for (const agRow of perAgRows) {
+          const agAmazonId = String(agRow.amazon_ad_group_id);
+          const adGroupDbId = adGroupIdMap.get(agAmazonId);
+          const campaignDbId = agRow.campaign_id;
+          if (!adGroupDbId) continue;
+
+          try {
+            let kwRes = await fetch(
+              `${apiBase}/v2/keywords?adGroupIdFilter=${agAmazonId}`,
+              {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                  'Amazon-Advertising-API-ClientId': AMAZON_CLIENT_ID,
+                  'Amazon-Advertising-API-Scope': String(account.amazon_profile_id),
+                  'Content-Type': 'application/json',
+                },
+              },
+            );
+
+            if (!kwRes.ok && kwRes.status === 401) {
+              await refreshAndUpdateAccessToken();
+              kwRes = await fetch(
+                `${apiBase}/v2/keywords?adGroupIdFilter=${agAmazonId}`,
+                {
+                  headers: {
+                    Authorization: `Bearer ${accessToken}`,
+                    'Amazon-Advertising-API-ClientId': AMAZON_CLIENT_ID,
+                    'Amazon-Advertising-API-Scope': String(account.amazon_profile_id),
+                    'Content-Type': 'application/json',
+                  },
+                },
+              );
+            }
+
+            if (!kwRes.ok) {
+              console.error('Failed to fetch keywords for ad group', agAmazonId, kwRes.status);
+              continue;
+            }
+
+            const kwJson = await kwRes.json();
+            const perKwRows = [];
+            for (const kw of kwJson) {
+              const keywordAmazonId = String(kw.keywordId);
+              keywordAmazonIds.push(keywordAmazonId);
+              const oldKw = oldKeywordMetricsByKeywordId.get(keywordAmazonId) || {};
+              const maybeExistingId = existingKeywordIdByAmazonId.get(keywordAmazonId);
+              const row = {
+                id: maybeExistingId || randomUUID(),
+                campaign_id: campaignDbId,
+                keyword_id: keywordAmazonId,
+                text: kw.keywordText || '',
+                match_type: kw.matchType || '',
+                bid: kw.bid ?? 0,
+                status: String(kw.state ?? 'unknown').toLowerCase(),
+                spend: oldKw.spend ?? 0,
+                impressions: oldKw.impressions ?? 0,
+                clicks: oldKw.clicks ?? 0,
+                orders: oldKw.orders ?? 0,
+                acos: oldKw.acos ?? 0,
+                ad_group_id: adGroupDbId,
+                amazon_profile_id_text: String(account.amazon_profile_id),
+                amazon_region: account.amazon_region || null,
+                amazon_keyword_id: keywordAmazonId,
+              };
+              perKwRows.push(row);
+              keywordRows.push(row);
+            }
+
+            if (perKwRows.length > 0) {
+              let { error: upsertKwErr } = await supabase
+                .from('amazon_keywords')
+                .upsert(perKwRows);
+              if (upsertKwErr && upsertKwErr.code === '23503') {
+                const rowsWithoutAdGroup = perKwRows.map(({ ad_group_id, ...rest }) => rest);
+                ({ error: upsertKwErr } = await supabase
+                  .from('amazon_keywords')
+                  .upsert(rowsWithoutAdGroup));
+              }
+              if (upsertKwErr) {
+                console.error('Upsert keywords error (stream)', upsertKwErr);
+              } else {
+                console.log('Upserted', perKwRows.length, 'keyword rows (stream).');
+              }
+            }
+          } catch (e) {
+            console.error('Error fetching keywords for ad group', agAmazonId, e);
+          }
+        }
       }
     } catch (e) {
       console.error('Error fetching ad groups for campaign', campaignAmazonId, e);
     }
   }
 
-  let insertedAdGroups = [];
+  insertedAdGroups = insertedAdGroups;
   if (adGroupRows.length > 0) {
     // Attach existing ids for upsert
     const upsertRows = adGroupRows.map((row) => {
@@ -769,7 +938,7 @@ async function syncAccount(account) {
     }
   }
 
-  const adGroupIdMap = new Map();
+  adGroupIdMap;
   // include existing first, then override/extend with upsert results
   for (const [k, v] of existingAdGroupIdMap.entries()) adGroupIdMap.set(String(k), v);
   for (const ag of insertedAdGroups) {
@@ -777,9 +946,10 @@ async function syncAccount(account) {
   }
 
   // Fetch keywords and structure
+  if (!STREAM_UPSERTS) {
   console.log('Fetching keywords...');
-  const keywordRows = [];
-  const keywordAmazonIds = [];
+  keywordRows = [];
+  keywordAmazonIds = [];
 
   for (const [agAmazonId, campaignAmazonId] of adGroupAmazonToCampaignAmazon.entries()) {
     const adGroupDbId = adGroupIdMap.get(agAmazonId);
@@ -855,20 +1025,15 @@ async function syncAccount(account) {
   }
 
   // Enrich keywords with performance metrics (unless SKIP_METRICS)
-  if (!SKIP_METRICS && keywordAmazonIds.length > 0) {
+  if (!SKIP_METRICS && keywordRows.length > 0) {
     console.log('Fetching keyword metrics via v3...');
-    let keywordMetricsById = await getKeywordMetrics(
-      String(account.amazon_profile_id),
-      accessToken,
-      DAYS_WINDOW,
-      apiBase,
-    );
+    let keywordMetricsById = await keywordMetricsPromise;
     if (!keywordMetricsById || keywordMetricsById.size === 0) {
       await refreshAndUpdateAccessToken();
       keywordMetricsById = await getKeywordMetrics(
         String(account.amazon_profile_id),
         accessToken,
-        DAYS_WINDOW,
+        windowDays || DAYS_WINDOW,
         apiBase,
       );
     }
@@ -927,6 +1092,53 @@ async function syncAccount(account) {
         }
       } else if ((!metricsByCampaignId || metricsByCampaignId.size === 0) && STRICT_ONLY_REPORTS) {
         console.log('STRICT_ONLY_REPORTS=1: campaign v3 report missing; skipping keyword aggregation and keeping previous metrics.');
+      }
+
+      // Aggregate ad group metrics from keyword metrics and update amazon_ad_groups
+      const aggAg = new Map(); // adGroupId -> totals
+      for (const m of keywordMetricsById.values()) {
+        const agid = String(m.adGroupId || '');
+        if (!agid) continue;
+        const a = aggAg.get(agid) || { impressions: 0, clicks: 0, cost: 0, orders: 0, sales: 0 };
+        a.impressions += Number(m.impressions || 0);
+        a.clicks += Number(m.clicks || 0);
+        a.cost += Number(m.cost || 0);
+        a.orders += Number(m.orders || 0);
+        a.sales += Number(m.sales || 0);
+        aggAg.set(agid, a);
+      }
+      if (aggAg.size > 0) {
+        const updates = [];
+        for (const [agAmazonId, a] of aggAg.entries()) {
+          const dbId = adGroupIdMap.get(String(agAmazonId));
+          if (!dbId) continue;
+          const impressions = a.impressions;
+          const clicks = a.clicks;
+          const cost = a.cost;
+          const orders = a.orders;
+          const sales = a.sales;
+          const ctr = impressions > 0 ? clicks / impressions : 0;
+          const cpc = clicks > 0 ? cost / clicks : 0;
+          const acos = sales > 0 ? cost / sales : 0;
+          updates.push({
+            id: dbId,
+            impressions,
+            clicks,
+            spend: cost,
+            orders,
+            ctr,
+            cpc,
+            acos,
+            raw_data: { impressions, clicks, spend: cost, orders, sales },
+          });
+        }
+        if (updates.length > 0) {
+          const { error: agUpdErr } = await supabase
+            .from('amazon_ad_groups')
+            .upsert(updates);
+          if (agUpdErr) console.error('Failed to upsert ad group metrics', agUpdErr);
+          else console.log('Updated', updates.length, 'ad groups with aggregated metrics.');
+        }
       }
     }
   }
@@ -990,7 +1202,7 @@ async function syncAccount(account) {
     .eq('id', account.id);
 
   console.log(
-    `✅ Sync completed for account ${account.id}: ${campaignsToInsert.length} campaigns (with ${DAYS_WINDOW}-day performance).`,
+    `✅ Sync completed for account ${account.id}: ${campaignsToInsert.length} campaigns (with ${(windowDays || DAYS_WINDOW)}-day performance).`,
   );
 }
 
@@ -1020,7 +1232,54 @@ async function main() {
     } else {
       for (const account of accounts) {
         try {
-          await syncAccount(account);
+          if (ROLLING_SCHEDULE) {
+            const now = Date.now();
+            const DAY_MS = 24 * 60 * 60 * 1000;
+            const dailyWin = Number(account.daily_window_days || 3);
+            const weeklyWin = Number(account.weekly_window_days || 7);
+            const monthlyWin = Number(account.monthly_window_days || 30);
+
+            const last3 = account.last_3d_sync_at ? new Date(account.last_3d_sync_at).getTime() : 0;
+            const last7 = account.last_7d_sync_at ? new Date(account.last_7d_sync_at).getTime() : 0;
+            const last30 = account.last_30d_sync_at ? new Date(account.last_30d_sync_at).getTime() : 0;
+
+            const dueMonthly = !last30 || now - last30 >= 30 * DAY_MS;
+            const dueWeekly = !last7 || now - last7 >= 7 * DAY_MS;
+            const dueDaily = !last3 || now - last3 >= 1 * DAY_MS;
+
+            let ranAny = false;
+            if (dueMonthly) {
+              await syncAccount(account, monthlyWin);
+              await supabase
+                .from('amazon_accounts')
+                .update({ last_30d_sync_at: new Date().toISOString() })
+                .eq('id', account.id);
+              ranAny = true;
+            }
+            if (dueWeekly) {
+              await syncAccount(account, weeklyWin);
+              await supabase
+                .from('amazon_accounts')
+                .update({ last_7d_sync_at: new Date().toISOString() })
+                .eq('id', account.id);
+              ranAny = true;
+            }
+            if (dueDaily) {
+              await syncAccount(account, dailyWin);
+              await supabase
+                .from('amazon_accounts')
+                .update({ last_3d_sync_at: new Date().toISOString() })
+                .eq('id', account.id);
+              ranAny = true;
+            }
+
+            if (!ranAny) {
+              // Nothing due now; fall back to default window for a quick refresh
+              await syncAccount(account, Number(process.env.DAYS_WINDOW || 7));
+            }
+          } else {
+            await syncAccount(account);
+          }
         } catch (e) {
           console.error(`❌ Error syncing account ${account.id}:`, e);
         }
