@@ -224,7 +224,12 @@ async function getCampaignMetrics(profileId, accessToken, daysWindow, apiBase) {
     const maxPolls = Math.ceil((REPORT_MAX_MIN * 60 * 1000) / REPORT_POLL_INTERVAL_MS);
     const infiniteWait = REPORT_MAX_MIN <= 0;
     const startedAt = Date.now();
-    console.log(`Polling campaign report ${infiniteWait ? 'indefinitely' : `up to ${REPORT_MAX_MIN}m`} (interval ${Math.round(REPORT_POLL_INTERVAL_MS/1000)}s)`);
+    const waitLabel = infiniteWait ? 'indefinitely' : `up to ${REPORT_MAX_MIN}m`;
+    console.log(
+      `Polling campaign report ${waitLabel} (interval ${Math.round(
+        REPORT_POLL_INTERVAL_MS / 1000,
+      )}s)`,
+    );
     for (let i = 0; ; i++) {
       const pollRes = await fetch(`${apiBase}/reporting/reports/${reportId}`, {
         headers: {
@@ -374,7 +379,12 @@ async function getKeywordMetrics(profileId, accessToken, daysWindow, apiBase) {
     const maxPolls = Math.ceil((REPORT_MAX_MIN * 60 * 1000) / REPORT_POLL_INTERVAL_MS);
     const infiniteWait = REPORT_MAX_MIN <= 0;
     const startedAt = Date.now();
-    console.log(`Polling keyword report ${infiniteWait ? 'indefinitely' : `up to ${REPORT_MAX_MIN}m`} (interval ${Math.round(REPORT_POLL_INTERVAL_MS/1000)}s)`);
+    const waitLabel = infiniteWait ? 'indefinitely' : `up to ${REPORT_MAX_MIN}m`;
+    console.log(
+      `Polling keyword report ${waitLabel} (interval ${Math.round(
+        REPORT_POLL_INTERVAL_MS / 1000,
+      )}s)`,
+    );
     for (let i = 0; ; i++) {
       const pollRes = await fetch(`${apiBase}/reporting/reports/${reportId}`, {
         headers: {
@@ -699,6 +709,7 @@ async function syncAccount(account, windowDays) {
       impressions,
       clicks,
       orders,
+      sales,
       acos,
       ctr,
       cpc,
@@ -804,6 +815,8 @@ async function syncAccount(account, windowDays) {
           amazon_region: account.amazon_region || null,
           amazon_ad_group_id: agAmazonId,
         };
+        const maybeExistingId = existingAdGroupIdMap.get(String(agAmazonId));
+        if (maybeExistingId) row.id = maybeExistingId;
         if (STREAM_UPSERTS) {
           perAgRows.push(row);
         } else {
@@ -1165,6 +1178,8 @@ async function syncAccount(account, windowDays) {
     }
   }
 
+  }
+
   // Update campaign metrics using whichever metrics we have at this point
   if (metricsByCampaignId && metricsByCampaignId.size > 0 && insertedCampaigns.length > 0) {
     let updated = 0;
@@ -1183,7 +1198,7 @@ async function syncAccount(account, windowDays) {
       const cpc = clicks > 0 ? spend / clicks : (m.cpc ?? 0);
       const { error: updErr } = await supabase
         .from('amazon_campaigns')
-        .update({ spend, impressions, clicks, orders, acos, ctr, cpc })
+        .update({ spend, impressions, clicks, orders, sales, acos, ctr, cpc })
         .eq('id', dbId);
       if (updErr) {
         console.error('Failed to update metrics for campaign', amazonId, updErr);
@@ -1207,87 +1222,91 @@ async function syncAccount(account, windowDays) {
   );
 }
 
+async function runSyncCycle() {
+  console.log('▶️ Amazon -> Supabase VPS sync started at', new Date().toISOString());
+
+  let query = supabase.from('amazon_accounts').select('*');
+  if (ACCOUNT_ID) {
+    query = query.eq('id', ACCOUNT_ID);
+  }
+
+  const { data: accounts, error } = await query;
+  if (error) {
+    console.error('Error loading amazon_accounts:', error);
+    throw error;
+  }
+
+  if (!accounts || !accounts.length) {
+    console.log('No amazon_accounts found; nothing to sync.');
+  } else {
+    for (const account of accounts) {
+      try {
+        if (ROLLING_SCHEDULE) {
+          const now = Date.now();
+          const DAY_MS = 24 * 60 * 60 * 1000;
+          const dailyWin = Number(account.daily_window_days || 3);
+          const weeklyWin = Number(account.weekly_window_days || 7);
+          const monthlyWin = Number(account.monthly_window_days || 30);
+
+          const last3 = account.last_3d_sync_at ? new Date(account.last_3d_sync_at).getTime() : 0;
+          const last7 = account.last_7d_sync_at ? new Date(account.last_7d_sync_at).getTime() : 0;
+          const last30 = account.last_30d_sync_at ? new Date(account.last_30d_sync_at).getTime() : 0;
+
+          const dueMonthly = !last30 || now - last30 >= 30 * DAY_MS;
+          const dueWeekly = !last7 || now - last7 >= 7 * DAY_MS;
+          const dueDaily = !last3 || now - last3 >= 1 * DAY_MS;
+
+          let ranAny = false;
+          if (dueMonthly) {
+            await syncAccount(account, monthlyWin);
+            await supabase
+              .from('amazon_accounts')
+              .update({ last_30d_sync_at: new Date().toISOString() })
+              .eq('id', account.id);
+            ranAny = true;
+          }
+          if (dueWeekly) {
+            await syncAccount(account, weeklyWin);
+            await supabase
+              .from('amazon_accounts')
+              .update({ last_7d_sync_at: new Date().toISOString() })
+              .eq('id', account.id);
+            ranAny = true;
+          }
+          if (dueDaily) {
+            await syncAccount(account, dailyWin);
+            await supabase
+              .from('amazon_accounts')
+              .update({ last_3d_sync_at: new Date().toISOString() })
+              .eq('id', account.id);
+            ranAny = true;
+          }
+
+          if (!ranAny) {
+            // Nothing due now; fall back to default window for a quick refresh
+            await syncAccount(account, Number(process.env.DAYS_WINDOW || 7));
+          }
+        } else {
+          await syncAccount(account);
+        }
+      } catch (e) {
+        console.error(`❌ Error syncing account ${account.id}:`, e);
+      }
+    }
+  }
+
+  console.log('🏁 Amazon -> Supabase VPS sync finished at', new Date().toISOString());
+}
+
 async function main() {
   do {
-    console.log('▶️ Amazon -> Supabase VPS sync started at', new Date().toISOString());
-
-    let query = supabase.from('amazon_accounts').select('*');
-    if (ACCOUNT_ID) {
-      query = query.eq('id', ACCOUNT_ID);
+    try {
+      await runSyncCycle();
+    } catch (e) {
+      console.error('Fatal error in sync cycle:', e);
+      if (!SYNC_LOOP_MIN) throw e;
     }
 
-    const { data: accounts, error } = await query;
-    if (error) {
-      console.error('Error loading amazon_accounts:', error);
-      if (SYNC_LOOP_MIN > 0) {
-        console.log(`⏱ Sleeping ${SYNC_LOOP_MIN}m due to load error before retry...`);
-        await new Promise((r) => setTimeout(r, SYNC_LOOP_MIN * 60 * 1000));
-        continue;
-      } else {
-        process.exit(1);
-      }
-    }
-
-    if (!accounts || !accounts.length) {
-      console.log('No amazon_accounts found; nothing to sync.');
-    } else {
-      for (const account of accounts) {
-        try {
-          if (ROLLING_SCHEDULE) {
-            const now = Date.now();
-            const DAY_MS = 24 * 60 * 60 * 1000;
-            const dailyWin = Number(account.daily_window_days || 3);
-            const weeklyWin = Number(account.weekly_window_days || 7);
-            const monthlyWin = Number(account.monthly_window_days || 30);
-
-            const last3 = account.last_3d_sync_at ? new Date(account.last_3d_sync_at).getTime() : 0;
-            const last7 = account.last_7d_sync_at ? new Date(account.last_7d_sync_at).getTime() : 0;
-            const last30 = account.last_30d_sync_at ? new Date(account.last_30d_sync_at).getTime() : 0;
-
-            const dueMonthly = !last30 || now - last30 >= 30 * DAY_MS;
-            const dueWeekly = !last7 || now - last7 >= 7 * DAY_MS;
-            const dueDaily = !last3 || now - last3 >= 1 * DAY_MS;
-
-            let ranAny = false;
-            if (dueMonthly) {
-              await syncAccount(account, monthlyWin);
-              await supabase
-                .from('amazon_accounts')
-                .update({ last_30d_sync_at: new Date().toISOString() })
-                .eq('id', account.id);
-              ranAny = true;
-            }
-            if (dueWeekly) {
-              await syncAccount(account, weeklyWin);
-              await supabase
-                .from('amazon_accounts')
-                .update({ last_7d_sync_at: new Date().toISOString() })
-                .eq('id', account.id);
-              ranAny = true;
-            }
-            if (dueDaily) {
-              await syncAccount(account, dailyWin);
-              await supabase
-                .from('amazon_accounts')
-                .update({ last_3d_sync_at: new Date().toISOString() })
-                .eq('id', account.id);
-              ranAny = true;
-            }
-
-            if (!ranAny) {
-              // Nothing due now; fall back to default window for a quick refresh
-              await syncAccount(account, Number(process.env.DAYS_WINDOW || 7));
-            }
-          } else {
-            await syncAccount(account);
-          }
-        } catch (e) {
-          console.error(`❌ Error syncing account ${account.id}:`, e);
-        }
-      }
-    }
-
-    console.log('🏁 Amazon -> Supabase VPS sync finished at', new Date().toISOString());
     if (SYNC_LOOP_MIN > 0) {
       console.log(`⏱ Sleeping ${SYNC_LOOP_MIN}m before next cycle...`);
       await new Promise((r) => setTimeout(r, SYNC_LOOP_MIN * 60 * 1000));
