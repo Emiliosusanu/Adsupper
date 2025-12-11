@@ -19,6 +19,7 @@
 //   DAYS_WINDOW  -> number of days for metrics (default 7)
 
 import { createClient } from '@supabase/supabase-js';
+import { randomUUID } from 'node:crypto';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -32,6 +33,9 @@ const SKIP_METRICS =
   process.env.SKIP_METRICS === '1' ||
   process.env.SKIP_METRICS === 'true' ||
   process.env.SKIP_METRICS === 'TRUE';
+// Tunable reporting wait and poll interval
+const REPORT_MAX_MIN = Number(process.env.REPORT_MAX_MIN || 30);
+const REPORT_POLL_INTERVAL_MS = Number(process.env.REPORT_POLL_INTERVAL_MS || 5000);
 
 // Region-aware base selection
 function normalizeRegion(region) {
@@ -159,6 +163,7 @@ async function getCampaignMetrics(profileId, accessToken, daysWindow, apiBase) {
   };
 
   try {
+    console.log(`Creating campaign report ${startDate}..${endDate}`);
     const createRes = await fetch(`${apiBase}/reporting/reports`, {
       method: 'POST',
       headers: {
@@ -195,8 +200,10 @@ async function getCampaignMetrics(profileId, accessToken, daysWindow, apiBase) {
 
     let downloadUrl = null;
     let lastPoll = null;
-    // On VPS we can safely poll longer: up to ~10 minutes (120 * 5s)
-    for (let i = 0; i < 180; i++) {
+    const maxPolls = Math.ceil((REPORT_MAX_MIN * 60 * 1000) / REPORT_POLL_INTERVAL_MS);
+    const startedAt = Date.now();
+    console.log(`Polling campaign report up to ${REPORT_MAX_MIN}m (interval ${Math.round(REPORT_POLL_INTERVAL_MS/1000)}s)`);
+    for (let i = 0; i < maxPolls; i++) {
       const pollRes = await fetch(`${apiBase}/reporting/reports/${reportId}`, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -206,11 +213,15 @@ async function getCampaignMetrics(profileId, accessToken, daysWindow, apiBase) {
       });
       const pollJson = await pollRes.json().catch(() => ({}));
       lastPoll = pollJson;
+      if (i === 0 || i % Math.max(1, Math.floor(30000 / REPORT_POLL_INTERVAL_MS)) === 0) {
+        const sec = Math.round((Date.now() - startedAt) / 1000);
+        console.log(`Campaign report poll #${i + 1}/${maxPolls} (${sec}s): status=${pollJson.status || 'UNKNOWN'}`);
+      }
       if (pollJson.status === 'SUCCESS' || pollJson.status === 'COMPLETED') {
         downloadUrl = pollJson.location || pollJson.url || null;
         break;
       }
-      await new Promise((r) => setTimeout(r, 5000));
+      await new Promise((r) => setTimeout(r, REPORT_POLL_INTERVAL_MS));
     }
 
     if (!downloadUrl) {
@@ -288,6 +299,7 @@ async function getKeywordMetrics(profileId, accessToken, daysWindow, apiBase) {
   };
 
   try {
+    console.log(`Creating keyword report ${startDate}..${endDate}`);
     const createRes = await fetch(`${apiBase}/reporting/reports`, {
       method: 'POST',
       headers: {
@@ -324,8 +336,10 @@ async function getKeywordMetrics(profileId, accessToken, daysWindow, apiBase) {
 
     let downloadUrl = null;
     let lastPoll = null;
-    // On VPS we can safely poll longer: up to ~15 minutes (180 * 5s)
-    for (let i = 0; i < 180; i++) {
+    const maxPolls = Math.ceil((REPORT_MAX_MIN * 60 * 1000) / REPORT_POLL_INTERVAL_MS);
+    const startedAt = Date.now();
+    console.log(`Polling keyword report up to ${REPORT_MAX_MIN}m (interval ${Math.round(REPORT_POLL_INTERVAL_MS/1000)}s)`);
+    for (let i = 0; i < maxPolls; i++) {
       const pollRes = await fetch(`${apiBase}/reporting/reports/${reportId}`, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -335,11 +349,15 @@ async function getKeywordMetrics(profileId, accessToken, daysWindow, apiBase) {
       });
       const pollJson = await pollRes.json().catch(() => ({}));
       lastPoll = pollJson;
+      if (i === 0 || i % Math.max(1, Math.floor(30000 / REPORT_POLL_INTERVAL_MS)) === 0) {
+        const sec = Math.round((Date.now() - startedAt) / 1000);
+        console.log(`Keyword report poll #${i + 1}/${maxPolls} (${sec}s): status=${pollJson.status || 'UNKNOWN'}`);
+      }
       if (pollJson.status === 'SUCCESS' || pollJson.status === 'COMPLETED') {
         downloadUrl = pollJson.location || pollJson.url || null;
         break;
       }
-      await new Promise((r) => setTimeout(r, 5000));
+      await new Promise((r) => setTimeout(r, REPORT_POLL_INTERVAL_MS));
     }
 
     if (!downloadUrl) {
@@ -789,8 +807,7 @@ async function syncAccount(account) {
         const oldKw = oldKeywordMetricsByKeywordId.get(keywordAmazonId) || {};
 
         const maybeExistingId = existingKeywordIdByAmazonId.get(keywordAmazonId);
-        keywordRows.push({
-          id: maybeExistingId || undefined,
+        const row = {
           campaign_id: campaignDbId,
           keyword_id: keywordAmazonId,
           text: kw.keywordText || '',
@@ -806,7 +823,9 @@ async function syncAccount(account) {
           amazon_profile_id_text: String(account.amazon_profile_id),
           amazon_region: account.amazon_region || null,
           amazon_keyword_id: keywordAmazonId,
-        });
+        };
+        row.id = maybeExistingId || randomUUID();
+        keywordRows.push(row);
       }
     } catch (e) {
       console.error('Error fetching keywords for ad group', agAmazonId, e);
@@ -906,7 +925,7 @@ async function syncAccount(account) {
 
   // Update campaign metrics using whichever metrics we have at this point
   if (metricsByCampaignId && metricsByCampaignId.size > 0 && insertedCampaigns.length > 0) {
-    const updateRows = [];
+    let updated = 0;
     for (const c of amazonCampaigns) {
       const amazonId = String(c.campaignId);
       const dbId = campaignIdMap.get(amazonId);
@@ -920,16 +939,17 @@ async function syncAccount(account) {
       const acos = sales > 0 ? spend / sales : (m.acos ?? 0);
       const ctr = impressions > 0 ? clicks / impressions : (m.ctr ?? 0);
       const cpc = clicks > 0 ? spend / clicks : (m.cpc ?? 0);
-      updateRows.push({ id: dbId, spend, impressions, clicks, orders, acos, ctr, cpc });
-    }
-    if (updateRows.length > 0) {
-      const { error: upErr } = await supabase.from('amazon_campaigns').upsert(updateRows);
-      if (upErr) {
-        console.error('Failed to update campaign metrics from keyword aggregation', upErr);
+      const { error: updErr } = await supabase
+        .from('amazon_campaigns')
+        .update({ spend, impressions, clicks, orders, acos, ctr, cpc })
+        .eq('id', dbId);
+      if (updErr) {
+        console.error('Failed to update metrics for campaign', amazonId, updErr);
       } else {
-        console.log('Updated', updateRows.length, 'campaigns with metrics.');
+        updated++;
       }
     }
+    console.log('Updated', updated, 'campaigns with metrics.');
   }
 
   await supabase
