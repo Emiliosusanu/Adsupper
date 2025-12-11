@@ -729,6 +729,7 @@ async function syncAccount(account, windowDays) {
           const existingId = oldCampaigns?.find((oc) => String(oc.campaign_id) === c.campaign_id)?.id;
           return existingId ? { id: existingId, ...c } : c;
         }),
+        { onConflict: 'amazon_profile_id_text,campaign_id' }
       )
       .select('id, campaign_id');
     if (error) {
