@@ -259,7 +259,10 @@ if (process.env.ENABLE_MANUAL_ENDPOINT === 'true') {
       }
       return;
     }
-    if (req.method === 'POST' && (pathname === '/amazon/update' || pathname.endsWith('/amazon/update'))) {
+    if (
+      req.method === 'POST' &&
+      (/(^|\/)amazon\/update$/.test(pathname) || pathname.endsWith('/amazon/update'))
+    ) {
       try {
         const chunks = [];
         for await (const chunk of req) chunks.push(chunk);
