@@ -36,6 +36,13 @@ const SKIP_METRICS =
 // Tunable reporting wait and poll interval
 const REPORT_MAX_MIN = Number(process.env.REPORT_MAX_MIN || 30);
 const REPORT_POLL_INTERVAL_MS = Number(process.env.REPORT_POLL_INTERVAL_MS || 5000);
+// Strict mode: only persist campaign metrics when the spCampaigns report is ready.
+// Default ON to ensure 100% Amazon-only metrics (no keyword aggregation fallback).
+const STRICT_ONLY_REPORTS = (() => {
+  const v = process.env.STRICT_ONLY_REPORTS;
+  if (v == null) return true;
+  return !(v === '0' || v === 'false' || v === 'FALSE');
+})();
 
 // Region-aware base selection
 function normalizeRegion(region) {
@@ -201,9 +208,10 @@ async function getCampaignMetrics(profileId, accessToken, daysWindow, apiBase) {
     let downloadUrl = null;
     let lastPoll = null;
     const maxPolls = Math.ceil((REPORT_MAX_MIN * 60 * 1000) / REPORT_POLL_INTERVAL_MS);
+    const infiniteWait = REPORT_MAX_MIN <= 0;
     const startedAt = Date.now();
-    console.log(`Polling campaign report up to ${REPORT_MAX_MIN}m (interval ${Math.round(REPORT_POLL_INTERVAL_MS/1000)}s)`);
-    for (let i = 0; i < maxPolls; i++) {
+    console.log(`Polling campaign report ${infiniteWait ? 'indefinitely' : `up to ${REPORT_MAX_MIN}m`} (interval ${Math.round(REPORT_POLL_INTERVAL_MS/1000)}s)`);
+    for (let i = 0; ; i++) {
       const pollRes = await fetch(`${apiBase}/reporting/reports/${reportId}`, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -215,13 +223,18 @@ async function getCampaignMetrics(profileId, accessToken, daysWindow, apiBase) {
       lastPoll = pollJson;
       if (i === 0 || i % Math.max(1, Math.floor(30000 / REPORT_POLL_INTERVAL_MS)) === 0) {
         const sec = Math.round((Date.now() - startedAt) / 1000);
-        console.log(`Campaign report poll #${i + 1}/${maxPolls} (${sec}s): status=${pollJson.status || 'UNKNOWN'}`);
+        console.log(`Campaign report poll #${i + 1}/${infiniteWait ? '∞' : maxPolls} (${sec}s): status=${pollJson.status || 'UNKNOWN'}`);
       }
       if (pollJson.status === 'SUCCESS' || pollJson.status === 'COMPLETED') {
         downloadUrl = pollJson.location || pollJson.url || null;
         break;
       }
+      if (['CANCELLED', 'FAILURE', 'ERROR', 'FAILED'].includes(String(pollJson.status))) {
+        console.error('Campaign report ended with failure status', pollJson);
+        break;
+      }
       await new Promise((r) => setTimeout(r, REPORT_POLL_INTERVAL_MS));
+      if (!infiniteWait && i + 1 >= maxPolls) break;
     }
 
     if (!downloadUrl) {
@@ -337,9 +350,10 @@ async function getKeywordMetrics(profileId, accessToken, daysWindow, apiBase) {
     let downloadUrl = null;
     let lastPoll = null;
     const maxPolls = Math.ceil((REPORT_MAX_MIN * 60 * 1000) / REPORT_POLL_INTERVAL_MS);
+    const infiniteWait = REPORT_MAX_MIN <= 0;
     const startedAt = Date.now();
-    console.log(`Polling keyword report up to ${REPORT_MAX_MIN}m (interval ${Math.round(REPORT_POLL_INTERVAL_MS/1000)}s)`);
-    for (let i = 0; i < maxPolls; i++) {
+    console.log(`Polling keyword report ${infiniteWait ? 'indefinitely' : `up to ${REPORT_MAX_MIN}m`} (interval ${Math.round(REPORT_POLL_INTERVAL_MS/1000)}s)`);
+    for (let i = 0; ; i++) {
       const pollRes = await fetch(`${apiBase}/reporting/reports/${reportId}`, {
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -351,13 +365,18 @@ async function getKeywordMetrics(profileId, accessToken, daysWindow, apiBase) {
       lastPoll = pollJson;
       if (i === 0 || i % Math.max(1, Math.floor(30000 / REPORT_POLL_INTERVAL_MS)) === 0) {
         const sec = Math.round((Date.now() - startedAt) / 1000);
-        console.log(`Keyword report poll #${i + 1}/${maxPolls} (${sec}s): status=${pollJson.status || 'UNKNOWN'}`);
+        console.log(`Keyword report poll #${i + 1}/${infiniteWait ? '∞' : maxPolls} (${sec}s): status=${pollJson.status || 'UNKNOWN'}`);
       }
       if (pollJson.status === 'SUCCESS' || pollJson.status === 'COMPLETED') {
         downloadUrl = pollJson.location || pollJson.url || null;
         break;
       }
+      if (['CANCELLED', 'FAILURE', 'ERROR', 'FAILED'].includes(String(pollJson.status))) {
+        console.error('Keyword report ended with failure status', pollJson);
+        break;
+      }
       await new Promise((r) => setTimeout(r, REPORT_POLL_INTERVAL_MS));
+      if (!infiniteWait && i + 1 >= maxPolls) break;
     }
 
     if (!downloadUrl) {
@@ -869,8 +888,8 @@ async function syncAccount(account) {
         row.acos = sales > 0 ? spend / (sales || 1) : 0;
       }
 
-      // If campaign report is missing/empty, aggregate from keyword metrics
-      if (!metricsByCampaignId || metricsByCampaignId.size === 0) {
+      // If campaign report is missing/empty, aggregate from keyword metrics (unless strict mode)
+      if ((!metricsByCampaignId || metricsByCampaignId.size === 0) && !STRICT_ONLY_REPORTS) {
         const agg = new Map(); // campaignId -> totals
         for (const m of keywordMetricsById.values()) {
           const cid = String(m.campaignId || '');
@@ -898,6 +917,8 @@ async function syncAccount(account) {
             metricsByCampaignId.set(String(cid), { impressions, clicks, cost, orders, sales, ctr, cpc, acos });
           }
         }
+      } else if ((!metricsByCampaignId || metricsByCampaignId.size === 0) && STRICT_ONLY_REPORTS) {
+        console.log('STRICT_ONLY_REPORTS=1: campaign v3 report missing; skipping keyword aggregation and keeping previous metrics.');
       }
     }
   }
