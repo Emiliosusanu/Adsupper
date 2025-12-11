@@ -1,6 +1,10 @@
 {
   "rewrites": [
     {
+      "source": "/api/optimizer/(.*)",
+      "destination": "https://optimizer.royaltix.pro/$1"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }

@@ -9,6 +9,7 @@ import { BarChart3, AlertTriangle, DownloadCloud, Loader2, Search, ArrowUpDown, 
 import { motion } from 'framer-motion';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from '@/components/ui/input';
+import { OPTIMIZATION_SERVER_URL } from '@/lib/config';
 
 
 
@@ -199,10 +200,7 @@ const CampaignsPage = () => {
   };
 
   const callUpdate = async (type, items) => {
-    const baseUrl = (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_OPTIMIZATION_SERVER_URL)
-      || (typeof process !== 'undefined' && process.env && process.env.OPTIMIZATION_SERVER_URL)
-      || 'http://localhost:3001';
-    const res = await fetch(`${baseUrl}/amazon/update`, {
+    const res = await fetch(`${OPTIMIZATION_SERVER_URL}/amazon/update`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ accountId: selectedAccountId, type, items }),
