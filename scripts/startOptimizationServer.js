@@ -1,7 +1,11 @@
 import cron from 'node-cron';
 import { runDailyOptimization } from './optimizationCron.js';
 import { createServer } from 'http';
-import { supabase } from '../src/lib/supabaseClient.js';
+import { createClient } from '@supabase/supabase-js';
+
+const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 const AMAZON_CLIENT_ID = process.env.AMAZON_CLIENT_ID || process.env.VITE_AMAZON_CLIENT_ID;
 const AMAZON_CLIENT_SECRET = process.env.AMAZON_CLIENT_SECRET || process.env.VITE_AMAZON_CLIENT_SECRET;
@@ -77,10 +81,11 @@ async function applyAmazonUpdates({ accountId, type, items }) {
     try {
       const tok = await refreshAccessToken(account.refresh_token);
       access_token = tok.access_token;
-      await supabase
+      const { error: accUpdErr } = await supabase
         .from('amazon_accounts')
         .update({ access_token: tok.access_token, refresh_token: tok.refresh_token, token_expires_at: new Date(Date.now() + (tok.expires_in || 3600) * 1000).toISOString(), updated_at: new Date().toISOString(), status: 'active' })
         .eq('id', accountId);
+      if (accUpdErr) throw accUpdErr;
     } catch (e) {
       throw e;
     }
@@ -113,7 +118,12 @@ async function applyAmazonUpdates({ accountId, type, items }) {
     const body = items.map((it) => ({ campaignId: String(it.amazonId), budget: Number(it.value) }));
     await putJson(`${apiBase}/v2/campaigns`, body);
     for (const it of items) {
-      await supabase.from('amazon_campaigns').update({ budget: Number(it.value), updated_at: new Date().toISOString() }).eq('account_id', accountId).eq('campaign_id', String(it.amazonId));
+      const { error: updErr } = await supabase
+        .from('amazon_campaigns')
+        .update({ budget: Number(it.value), updated_at: new Date().toISOString() })
+        .eq('account_id', accountId)
+        .eq('campaign_id', String(it.amazonId));
+      if (updErr) throw updErr;
     }
     return { success: true };
   }
@@ -121,11 +131,12 @@ async function applyAmazonUpdates({ accountId, type, items }) {
     const body = items.map((it) => ({ campaignId: String(it.amazonId), state: String(it.value || '').toLowerCase() }));
     await putJson(`${apiBase}/v2/campaigns`, body);
     for (const it of items) {
-      await supabase
+      const { error: updErr } = await supabase
         .from('amazon_campaigns')
         .update({ status: String(it.value || '').toLowerCase(), updated_at: new Date().toISOString() })
         .eq('account_id', accountId)
         .eq('campaign_id', String(it.amazonId));
+      if (updErr) throw updErr;
     }
     return { success: true };
   }
@@ -133,7 +144,12 @@ async function applyAmazonUpdates({ accountId, type, items }) {
     const body = items.map((it) => ({ adGroupId: String(it.amazonId), defaultBid: Number(it.value) }));
     await putJson(`${apiBase}/v2/adGroups`, body);
     for (const it of items) {
-      await supabase.from('amazon_ad_groups').update({ default_bid: Number(it.value), updated_at: new Date().toISOString() }).eq('account_id', accountId).eq('amazon_ad_group_id', String(it.amazonId));
+      const { error: updErr } = await supabase
+        .from('amazon_ad_groups')
+        .update({ default_bid: Number(it.value), updated_at: new Date().toISOString() })
+        .eq('account_id', accountId)
+        .eq('amazon_ad_group_id', String(it.amazonId));
+      if (updErr) throw updErr;
     }
     return { success: true };
   }
@@ -141,11 +157,12 @@ async function applyAmazonUpdates({ accountId, type, items }) {
     const body = items.map((it) => ({ adGroupId: String(it.amazonId), state: String(it.value || '').toLowerCase() }));
     await putJson(`${apiBase}/v2/adGroups`, body);
     for (const it of items) {
-      await supabase
+      const { error: updErr } = await supabase
         .from('amazon_ad_groups')
         .update({ status: String(it.value || '').toLowerCase(), updated_at: new Date().toISOString() })
         .eq('account_id', accountId)
         .eq('amazon_ad_group_id', String(it.amazonId));
+      if (updErr) throw updErr;
     }
     return { success: true };
   }
@@ -153,7 +170,11 @@ async function applyAmazonUpdates({ accountId, type, items }) {
     const body = items.map((it) => ({ keywordId: String(it.amazonId), bid: Number(it.value) }));
     await putJson(`${apiBase}/v2/keywords/biddable`, body);
     for (const it of items) {
-      await supabase.from('amazon_keywords').update({ bid: Number(it.value), updated_at: new Date().toISOString() }).eq('amazon_keyword_id', String(it.amazonId));
+      const { error: updErr } = await supabase
+        .from('amazon_keywords')
+        .update({ bid: Number(it.value), updated_at: new Date().toISOString() })
+        .eq('amazon_keyword_id', String(it.amazonId));
+      if (updErr) throw updErr;
     }
     return { success: true };
   }
@@ -161,10 +182,11 @@ async function applyAmazonUpdates({ accountId, type, items }) {
     const body = items.map((it) => ({ keywordId: String(it.amazonId), state: String(it.value || '').toLowerCase() }));
     await putJson(`${apiBase}/v2/keywords`, body);
     for (const it of items) {
-      await supabase
+      const { error: updErr } = await supabase
         .from('amazon_keywords')
         .update({ status: String(it.value || '').toLowerCase(), updated_at: new Date().toISOString() })
         .eq('amazon_keyword_id', String(it.amazonId));
+      if (updErr) throw updErr;
     }
     return { success: true };
   }
