@@ -733,16 +733,23 @@ async function syncAccount(account, windowDays) {
   if (campaignsToInsert.length > 0) {
     // Safe upsert: if an existing campaign row (by id) exists, update; otherwise insert.
     // We rely on primary key id for updates via upsert; for new rows 'id' is absent.
-    const { data, error } = await supabase
+    const rowsWithExisting = campaignsToInsert.map((c) => {
+      const existingId = oldCampaigns?.find((oc) => String(oc.campaign_id) === c.campaign_id)?.id;
+      return existingId ? { id: existingId, ...c } : c;
+    });
+
+    let { data, error } = await supabase
       .from('amazon_campaigns')
-      .upsert(
-        campaignsToInsert.map((c) => {
-          const existingId = oldCampaigns?.find((oc) => String(oc.campaign_id) === c.campaign_id)?.id;
-          return existingId ? { id: existingId, ...c } : c;
-        }),
-        { onConflict: 'amazon_profile_id_text,campaign_id' }
-      )
+      .upsert(rowsWithExisting, { onConflict: 'amazon_profile_id_text,campaign_id' })
       .select('id, campaign_id');
+
+    if (error && String(error.message || error.details || '').toLowerCase().includes('on conflict')) {
+      ({ data, error } = await supabase
+        .from('amazon_campaigns')
+        .upsert(rowsWithExisting)
+        .select('id, campaign_id'));
+    }
+
     if (error) {
       console.error('Insert campaigns error', error);
       return;
