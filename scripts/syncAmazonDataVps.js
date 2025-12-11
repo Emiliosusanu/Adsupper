@@ -43,6 +43,8 @@ const STRICT_ONLY_REPORTS = (() => {
   if (v == null) return true;
   return !(v === '0' || v === 'false' || v === 'FALSE');
 })();
+// Daemon mode: when >0, run sync in a loop with this sleep in minutes between cycles
+const SYNC_LOOP_MIN = Number(process.env.SYNC_LOOP_MIN || 0);
 
 // Region-aware base selection
 function normalizeRegion(region) {
@@ -987,33 +989,44 @@ async function syncAccount(account) {
 }
 
 async function main() {
-  console.log('▶️ Amazon -> Supabase VPS sync started at', new Date().toISOString());
+  do {
+    console.log('▶️ Amazon -> Supabase VPS sync started at', new Date().toISOString());
 
-  let query = supabase.from('amazon_accounts').select('*');
-  if (ACCOUNT_ID) {
-    query = query.eq('id', ACCOUNT_ID);
-  }
-
-  const { data: accounts, error } = await query;
-  if (error) {
-    console.error('Error loading amazon_accounts:', error);
-    process.exit(1);
-  }
-
-  if (!accounts || !accounts.length) {
-    console.log('No amazon_accounts found; nothing to sync.');
-    return;
-  }
-
-  for (const account of accounts) {
-    try {
-      await syncAccount(account);
-    } catch (e) {
-      console.error(`❌ Error syncing account ${account.id}:`, e);
+    let query = supabase.from('amazon_accounts').select('*');
+    if (ACCOUNT_ID) {
+      query = query.eq('id', ACCOUNT_ID);
     }
-  }
 
-  console.log('🏁 Amazon -> Supabase VPS sync finished at', new Date().toISOString());
+    const { data: accounts, error } = await query;
+    if (error) {
+      console.error('Error loading amazon_accounts:', error);
+      if (SYNC_LOOP_MIN > 0) {
+        console.log(`⏱ Sleeping ${SYNC_LOOP_MIN}m due to load error before retry...`);
+        await new Promise((r) => setTimeout(r, SYNC_LOOP_MIN * 60 * 1000));
+        continue;
+      } else {
+        process.exit(1);
+      }
+    }
+
+    if (!accounts || !accounts.length) {
+      console.log('No amazon_accounts found; nothing to sync.');
+    } else {
+      for (const account of accounts) {
+        try {
+          await syncAccount(account);
+        } catch (e) {
+          console.error(`❌ Error syncing account ${account.id}:`, e);
+        }
+      }
+    }
+
+    console.log('🏁 Amazon -> Supabase VPS sync finished at', new Date().toISOString());
+    if (SYNC_LOOP_MIN > 0) {
+      console.log(`⏱ Sleeping ${SYNC_LOOP_MIN}m before next cycle...`);
+      await new Promise((r) => setTimeout(r, SYNC_LOOP_MIN * 60 * 1000));
+    }
+  } while (SYNC_LOOP_MIN > 0);
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
