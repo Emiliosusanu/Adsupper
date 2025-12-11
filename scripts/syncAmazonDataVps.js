@@ -401,6 +401,7 @@ async function getKeywordMetrics(profileId, accessToken, daysWindow, apiBase) {
 
       byKeywordId.set(keywordId, {
         campaignId: String(row.campaignId ?? row.campaign_id ?? ''),
+        adGroupId: String(row.adGroupId ?? row.ad_group_id ?? ''),
         impressions,
         clicks,
         cost,
@@ -882,12 +883,17 @@ async function syncAccount(account) {
         const clicks = metrics.clicks;
         const orders = metrics.orders;
         const sales = metrics.sales;
+        const ctr = impressions > 0 ? clicks / impressions : 0;
+        const cpc = clicks > 0 ? spend / clicks : 0;
 
         row.spend = spend;
         row.impressions = impressions;
         row.clicks = clicks;
         row.orders = orders;
         row.acos = sales > 0 ? spend / (sales || 1) : 0;
+        row.ctr = ctr;
+        row.cpc = cpc;
+        row.raw_data = { spend, impressions, clicks, orders, sales };
       }
 
       // If campaign report is missing/empty, aggregate from keyword metrics (unless strict mode)
