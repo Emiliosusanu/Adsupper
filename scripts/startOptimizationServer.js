@@ -239,13 +239,16 @@ if (process.env.ENABLE_MANUAL_ENDPOINT === 'true') {
       res.end();
       return;
     }
+    // Normalize pathname (ignore query and trailing slashes)
+    const parsedUrl = new URL(req.url || '/', 'http://local');
+    const pathname = (parsedUrl.pathname || '/').replace(/\/+$/, '') || '/';
 
-    if (req.url === '/health') {
+    if (pathname === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'healthy', timestamp: new Date().toISOString() }));
       return;
     }
-    if (req.url === '/optimize' && req.method === 'POST') {
+    if (pathname === '/optimize' && req.method === 'POST') {
       try {
         await runDailyOptimization();
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -256,7 +259,10 @@ if (process.env.ENABLE_MANUAL_ENDPOINT === 'true') {
       }
       return;
     }
-    if (req.url === '/amazon/update' && req.method === 'POST') {
+    if (
+      req.method === 'POST' &&
+      (/(^|\/)amazon\/update$/.test(pathname) || pathname.endsWith('/amazon/update'))
+    ) {
       try {
         const chunks = [];
         for await (const chunk of req) chunks.push(chunk);

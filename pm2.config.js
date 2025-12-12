@@ -30,5 +30,20 @@ export default {
         CHECK_INTERVAL_MINUTES: "15", // Check rules every 15 minutes
       },
     },
+    {
+      name: "robotads-server",
+      script: "./scripts/startOptimizationServer.js",
+      instances: 1,
+      autorestart: true,
+      watch: false,
+      env: {
+        SUPABASE_URL: process.env.SUPABASE_URL,
+        SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+        AMAZON_CLIENT_ID: process.env.AMAZON_CLIENT_ID,
+        AMAZON_CLIENT_SECRET: process.env.AMAZON_CLIENT_SECRET,
+        ENABLE_MANUAL_ENDPOINT: "true",
+        OPTIMIZATION_SERVER_PORT: "3001",
+      },
+    },
   ],
 };
