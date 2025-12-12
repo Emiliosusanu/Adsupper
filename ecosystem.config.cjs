@@ -1,4 +1,5 @@
 // ecosystem.config.cjs
+require("dotenv").config();
 module.exports = {
   apps: [
     {
