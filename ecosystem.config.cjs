@@ -17,7 +17,8 @@ module.exports = {
         AMAZON_CLIENT_ID: process.env.AMAZON_CLIENT_ID,
         AMAZON_CLIENT_SECRET: process.env.AMAZON_CLIENT_SECRET,
         SYNC_LOOP_MIN: "60", // Run sync every 60 minutes
-        DAYS_WINDOW: "1", // Test with 1 day only for faster report generation
+        DAYS_WINDOW: "7", // 7 day metrics window
+        REPORT_MAX_MIN: "180", // 3 hours per Amazon documentation
         STRICT_ONLY_REPORTS: "false", // Allow fallback to aggregated metrics from keywords
       },
     },
