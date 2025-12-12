@@ -1,5 +1,5 @@
-// pm2.config.js
-export default {
+// ecosystem.config.cjs
+module.exports = {
   apps: [
     {
       name: "robotads-sync",
