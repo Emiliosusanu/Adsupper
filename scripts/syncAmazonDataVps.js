@@ -208,6 +208,7 @@ async function getCampaignMetrics(profileId, accessToken, daysWindow, apiBase) {
       groupBy: ["campaign"],
       columns: [
         "campaignId",
+        "campaignName",
         "impressions",
         "clicks",
         "cost",
