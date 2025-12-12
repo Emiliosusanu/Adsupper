@@ -6,7 +6,7 @@
 //
 // Requirements:
 //   - Node 18+ (global fetch)
-//   - npm install @supabase/supabase-js
+//   - npm install @supabase/supabase-js dotenv
 //
 // Env vars (required):
 //   SUPABASE_URL
@@ -17,6 +17,10 @@
 // Optional env vars:
 //   ACCOUNT_ID   -> limit sync to a single amazon_accounts.id
 //   DAYS_WINDOW  -> number of days for metrics (default 7)
+
+// Load env vars from .env file (for VPS deployment)
+import { config as dotenvConfig } from "dotenv";
+dotenvConfig();
 
 import { createClient } from "@supabase/supabase-js";
 import { randomUUID } from "node:crypto";

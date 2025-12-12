@@ -5,7 +5,7 @@
 //
 // Requirements:
 //   - Node 18+ (global fetch)
-//   - npm install @supabase/supabase-js
+//   - npm install @supabase/supabase-js dotenv
 //
 // Env vars (required):
 //   SUPABASE_URL
@@ -19,7 +19,11 @@
 //   CHECK_INTERVAL_MINUTES -> how often to re-check rules in daemon mode (default 15)
 //   RUN_ONCE              -> if '1' or 'true', run a single optimization cycle then exit
 
-import { createClient } from '@supabase/supabase-js';
+// Load env vars from .env file (for VPS deployment)
+import { config as dotenvConfig } from "dotenv";
+dotenvConfig();
+
+import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -30,15 +34,20 @@ const ACCOUNT_ID = process.env.ACCOUNT_ID || null;
 const USER_ID = process.env.USER_ID || null;
 const CHECK_INTERVAL_MINUTES = Number(process.env.CHECK_INTERVAL_MINUTES || 15);
 const RUN_ONCE =
-  process.env.RUN_ONCE === '1' ||
-  process.env.RUN_ONCE === 'true' ||
-  process.env.RUN_ONCE === 'TRUE';
+  process.env.RUN_ONCE === "1" ||
+  process.env.RUN_ONCE === "true" ||
+  process.env.RUN_ONCE === "TRUE";
 
-const AMAZON_API_BASE = 'https://advertising-api.amazon.com';
+const AMAZON_API_BASE = "https://advertising-api.amazon.com";
 
-if (!SUPABASE_URL || !SERVICE_ROLE_KEY || !AMAZON_CLIENT_ID || !AMAZON_CLIENT_SECRET) {
+if (
+  !SUPABASE_URL ||
+  !SERVICE_ROLE_KEY ||
+  !AMAZON_CLIENT_ID ||
+  !AMAZON_CLIENT_SECRET
+) {
   console.error(
-    'Missing env vars. Required: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, AMAZON_CLIENT_ID, AMAZON_CLIENT_SECRET',
+    "Missing env vars. Required: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, AMAZON_CLIENT_ID, AMAZON_CLIENT_SECRET"
   );
   process.exit(1);
 }
@@ -58,11 +67,11 @@ function hoursBetween(a, b) {
 }
 
 async function refreshAccessToken(refreshToken) {
-  const res = await fetch('https://api.amazon.com/auth/o2/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+  const res = await fetch("https://api.amazon.com/auth/o2/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
-      grant_type: 'refresh_token',
+      grant_type: "refresh_token",
       refresh_token: refreshToken,
       client_id: AMAZON_CLIENT_ID,
       client_secret: AMAZON_CLIENT_SECRET,
@@ -70,7 +79,7 @@ async function refreshAccessToken(refreshToken) {
   });
 
   if (!res.ok) {
-    const text = await res.text().catch(() => '');
+    const text = await res.text().catch(() => "");
     throw new Error(`Token refresh failed: ${res.status} - ${text}`);
   }
 
@@ -84,7 +93,7 @@ async function refreshAccessToken(refreshToken) {
 
 // metrics from DB row
 function getMetricValue(row, metric) {
-  const m = String(metric || '').toLowerCase();
+  const m = String(metric || "").toLowerCase();
   const spend = Number(row.spend ?? 0) || 0;
   const impressions = Number(row.impressions ?? 0) || 0;
   const clicks = Number(row.clicks ?? 0) || 0;
@@ -92,19 +101,19 @@ function getMetricValue(row, metric) {
   const acos = Number(row.acos ?? 0) || 0;
 
   switch (m) {
-    case 'spend':
+    case "spend":
       return spend;
-    case 'impressions':
+    case "impressions":
       return impressions;
-    case 'clicks':
+    case "clicks":
       return clicks;
-    case 'orders':
+    case "orders":
       return orders;
-    case 'acos':
+    case "acos":
       return acos;
-    case 'ctr':
+    case "ctr":
       return impressions > 0 ? clicks / impressions : 0;
-    case 'cpc':
+    case "cpc":
       return clicks > 0 ? spend / clicks : 0;
     default: {
       const v = Number(row[m]);
@@ -116,21 +125,21 @@ function getMetricValue(row, metric) {
 function compareMetric(value, op, target) {
   const t = Number(target ?? 0);
   switch (op) {
-    case 'greater_than':
-    case '>':
+    case "greater_than":
+    case ">":
       return value > t;
-    case 'less_than':
-    case '<':
+    case "less_than":
+    case "<":
       return value < t;
-    case 'greater_or_equal':
-    case '>=':
+    case "greater_or_equal":
+    case ">=":
       return value >= t;
-    case 'less_or_equal':
-    case '<=':
+    case "less_or_equal":
+    case "<=":
       return value <= t;
-    case 'equals':
-    case '==':
-    case '=':
+    case "equals":
+    case "==":
+    case "=":
       return Math.abs(value - t) < 1e-6;
     default:
       return false;
@@ -140,11 +149,12 @@ function compareMetric(value, op, target) {
 function ruleDue(rule) {
   const settings = rule.settings || {};
   // main: frequency_days; fallback: frequency_hours / 24; default: 1 day
-  const freqDays = settings.frequency_days != null
-    ? Number(settings.frequency_days) || 0
-    : (settings.frequency_hours != null
-        ? (Number(settings.frequency_hours) || 0) / 24
-        : 1);
+  const freqDays =
+    settings.frequency_days != null
+      ? Number(settings.frequency_days) || 0
+      : settings.frequency_hours != null
+      ? (Number(settings.frequency_hours) || 0) / 24
+      : 1;
 
   if (freqDays <= 0) return true;
   if (!rule.last_run) return true;
@@ -154,15 +164,25 @@ function ruleDue(rule) {
 }
 
 function filterKeywordsByScope(keywords, scope) {
-  if (!scope || scope.type === 'ALL') return keywords;
+  if (!scope || scope.type === "ALL") return keywords;
   const type = scope.type;
 
-  if (type === 'CAMPAIGNS' && Array.isArray(scope.campaign_ids) && scope.campaign_ids.length) {
+  if (
+    type === "CAMPAIGNS" &&
+    Array.isArray(scope.campaign_ids) &&
+    scope.campaign_ids.length
+  ) {
     const set = new Set(scope.campaign_ids.map(String));
-    return keywords.filter((k) => k.campaign_id && set.has(String(k.campaign_id)));
+    return keywords.filter(
+      (k) => k.campaign_id && set.has(String(k.campaign_id))
+    );
   }
 
-  if (type === 'KEYWORDS' && Array.isArray(scope.keyword_ids) && scope.keyword_ids.length) {
+  if (
+    type === "KEYWORDS" &&
+    Array.isArray(scope.keyword_ids) &&
+    scope.keyword_ids.length
+  ) {
     const set = new Set(scope.keyword_ids.map(String));
     return keywords.filter((k) => k.id && set.has(String(k.id)));
   }
@@ -177,20 +197,20 @@ async function sendBidAdjustments(account, accessToken, actions) {
     const endpoint = `${AMAZON_API_BASE}/v2/sp/keywords/${a.keywordAmazonId}`;
     const payload = {};
 
-    if (a.type === 'pause') {
-      payload.state = 'paused';
-    } else if (a.type === 'adjust_bid_percentage') {
+    if (a.type === "pause") {
+      payload.state = "paused";
+    } else if (a.type === "adjust_bid_percentage") {
       payload.bid = a.newBid;
     }
 
     try {
       const res = await fetch(endpoint, {
-        method: 'PUT',
+        method: "PUT",
         headers: {
           Authorization: `Bearer ${accessToken}`,
-          'Amazon-Advertising-API-ClientId': AMAZON_CLIENT_ID,
-          'Amazon-Advertising-API-Scope': String(account.amazon_profile_id),
-          'Content-Type': 'application/json',
+          "Amazon-Advertising-API-ClientId": AMAZON_CLIENT_ID,
+          "Amazon-Advertising-API-Scope": String(account.amazon_profile_id),
+          "Content-Type": "application/json",
         },
         body: JSON.stringify(payload),
       });
@@ -206,7 +226,11 @@ async function sendBidAdjustments(account, accessToken, actions) {
         response: json,
       });
     } catch (e) {
-      console.error('Error sending adjustment for keyword', a.keywordAmazonId, e);
+      console.error(
+        "Error sending adjustment for keyword",
+        a.keywordAmazonId,
+        e
+      );
       results.push({
         keywordAmazonId: a.keywordAmazonId,
         status: 0,
@@ -234,7 +258,7 @@ async function logActions(account, rule, actions, resultsByKeyword) {
       reason: `Rule ${rule.name}`,
       rule_id: rule.id,
       amazon_account_id: account.id,
-      entity_type: 'keyword',
+      entity_type: "keyword",
       entity_id: a.keywordAmazonId,
       details: {
         metrics_snapshot: a.metricsSnapshot,
@@ -251,23 +275,23 @@ async function logActions(account, rule, actions, resultsByKeyword) {
     };
   });
 
-  const { error } = await supabase.from('optimization_logs').insert(rows);
+  const { error } = await supabase.from("optimization_logs").insert(rows);
   if (error) {
-    console.error('Failed to insert optimization_logs:', error);
+    console.error("Failed to insert optimization_logs:", error);
   }
 }
 
 async function logJob(status, message, errorDetails = null) {
   const now = nowIso();
-  const { error } = await supabase.from('optimization_job_logs').insert({
-    job_type: 'keyword_optimizer_vps',
+  const { error } = await supabase.from("optimization_job_logs").insert({
+    job_type: "keyword_optimizer_vps",
     status,
     message,
     started_at: now,
     completed_at: now,
     error_details: errorDetails,
   });
-  if (error) console.error('Error logging job:', error);
+  if (error) console.error("Error logging job:", error);
 }
 
 // Build actions for one rule and a list of keywords
@@ -277,12 +301,18 @@ function buildActionsForRule(rule, account, keywordsForAccount) {
   const conditions = Array.isArray(settings.conditions)
     ? settings.conditions
     : settings.metric
-    ? [{ metric: settings.metric, comparison: settings.condition || settings.condition_op || '>', value: settings.threshold }]
+    ? [
+        {
+          metric: settings.metric,
+          comparison: settings.condition || settings.condition_op || ">",
+          value: settings.threshold,
+        },
+      ]
     : [];
   const actionConf = settings.action || {};
 
-  const entity = (settings.entity || 'keyword').toLowerCase();
-  if (entity !== 'keyword') return [];
+  const entity = (settings.entity || "keyword").toLowerCase();
+  if (entity !== "keyword") return [];
 
   const scopedKeywords = filterKeywordsByScope(keywordsForAccount, scope);
   const actions = [];
@@ -295,7 +325,7 @@ function buildActionsForRule(rule, account, keywordsForAccount) {
       const metricName = cond.metric;
       const val = getMetricValue(kw, metricName);
       snapshot[metricName] = val;
-      const cmp = cond.comparison || cond.condition || '>';
+      const cmp = cond.comparison || cond.condition || ">";
       const target = cond.value != null ? cond.value : cond.threshold;
       if (!compareMetric(val, cmp, target)) {
         allMatch = false;
@@ -307,27 +337,30 @@ function buildActionsForRule(rule, account, keywordsForAccount) {
 
     const currentBid = Number(kw.bid ?? 0) || 0;
     // settings.action is the user-facing action string from the UI
-    const uiAction = typeof settings.action === 'string'
-      ? settings.action
-      : (actionConf.type || 'adjust_bid_percentage');
+    const uiAction =
+      typeof settings.action === "string"
+        ? settings.action
+        : actionConf.type || "adjust_bid_percentage";
 
     // Map UI action to low-level API type
     let type = uiAction;
-    if (uiAction === 'pause_keyword') {
-      type = 'pause';
-    } else if (uiAction === 'decrease_bid' || uiAction === 'increase_bid') {
-      type = 'adjust_bid_percentage';
+    if (uiAction === "pause_keyword") {
+      type = "pause";
+    } else if (uiAction === "decrease_bid" || uiAction === "increase_bid") {
+      type = "adjust_bid_percentage";
     }
 
     let newBid = currentBid;
 
-    if (type === 'adjust_bid_percentage') {
-      const rawPct = Number(actionConf.value ?? settings.action_value ?? 0) || 0;
-      const pct = uiAction === 'decrease_bid'
-        ? -Math.abs(rawPct)
-        : uiAction === 'increase_bid'
-        ? Math.abs(rawPct)
-        : rawPct;
+    if (type === "adjust_bid_percentage") {
+      const rawPct =
+        Number(actionConf.value ?? settings.action_value ?? 0) || 0;
+      const pct =
+        uiAction === "decrease_bid"
+          ? -Math.abs(rawPct)
+          : uiAction === "increase_bid"
+          ? Math.abs(rawPct)
+          : rawPct;
       const raw = currentBid * (1 + pct / 100);
       const minBid = Number(actionConf.min_bid ?? 0.02);
       const maxBid = Number(actionConf.max_bid ?? 10.0);
@@ -352,30 +385,40 @@ function buildActionsForRule(rule, account, keywordsForAccount) {
 }
 
 async function loadActiveRules() {
-  let query = supabase.from('optimization_rules').select('*').eq('enabled', true);
-  if (USER_ID) query = query.eq('user_id', USER_ID);
+  let query = supabase
+    .from("optimization_rules")
+    .select("*")
+    .eq("enabled", true);
+  if (USER_ID) query = query.eq("user_id", USER_ID);
   const { data, error } = await query;
-  if (error) throw new Error(`Failed to load optimization_rules: ${error.message}`);
+  if (error)
+    throw new Error(`Failed to load optimization_rules: ${error.message}`);
   return data || [];
 }
 
 async function loadAccounts() {
-  let query = supabase.from('amazon_accounts').select('*').eq('status', 'active');
-  if (ACCOUNT_ID) query = query.eq('id', ACCOUNT_ID);
-  if (USER_ID) query = query.eq('user_id', USER_ID);
+  let query = supabase
+    .from("amazon_accounts")
+    .select("*")
+    .eq("status", "active");
+  if (ACCOUNT_ID) query = query.eq("id", ACCOUNT_ID);
+  if (USER_ID) query = query.eq("user_id", USER_ID);
   const { data, error } = await query;
-  if (error) throw new Error(`Failed to load amazon_accounts: ${error.message}`);
+  if (error)
+    throw new Error(`Failed to load amazon_accounts: ${error.message}`);
   return data || [];
 }
 
 async function processAccount(account, rulesForUser) {
-  console.log(`\n▶️ Optimizing account ${account.id} (${account.name || ''})`);
+  console.log(`\n▶️ Optimizing account ${account.id} (${account.name || ""})`);
 
   // Token refresh
   let accessToken = account.access_token;
   const refreshToken = account.refresh_token;
   const now = new Date();
-  const expiresAt = account.token_expires_at ? new Date(account.token_expires_at) : null;
+  const expiresAt = account.token_expires_at
+    ? new Date(account.token_expires_at)
+    : null;
   const needsRefresh =
     !accessToken ||
     !expiresAt ||
@@ -383,11 +426,11 @@ async function processAccount(account, rulesForUser) {
 
   if (needsRefresh) {
     if (!refreshToken) {
-      console.error('No refresh token for account', account.id);
+      console.error("No refresh token for account", account.id);
       await supabase
-        .from('amazon_accounts')
-        .update({ status: 'reauth_required' })
-        .eq('id', account.id);
+        .from("amazon_accounts")
+        .update({ status: "reauth_required" })
+        .eq("id", account.id);
       return;
     }
 
@@ -395,98 +438,117 @@ async function processAccount(account, rulesForUser) {
       const refreshed = await refreshAccessToken(refreshToken);
       accessToken = refreshed.access_token;
       const newExpiry = new Date(
-        Date.now() + (refreshed.expires_in ?? 3600) * 1000,
+        Date.now() + (refreshed.expires_in ?? 3600) * 1000
       ).toISOString();
 
       await supabase
-        .from('amazon_accounts')
+        .from("amazon_accounts")
         .update({
           access_token: refreshed.access_token,
           refresh_token: refreshed.refresh_token,
           token_expires_at: newExpiry,
           updated_at: nowIso(),
-          status: 'active',
+          status: "active",
         })
-        .eq('id', account.id);
+        .eq("id", account.id);
     } catch (e) {
-      console.error('Token refresh failed for account', account.id, e);
+      console.error("Token refresh failed for account", account.id, e);
       await supabase
-        .from('amazon_accounts')
-        .update({ status: 'reauth_required' })
-        .eq('id', account.id);
+        .from("amazon_accounts")
+        .update({ status: "reauth_required" })
+        .eq("id", account.id);
       return;
     }
   }
 
   if (!accessToken) {
-    console.error('No access token after refresh; skipping account', account.id);
+    console.error(
+      "No access token after refresh; skipping account",
+      account.id
+    );
     return;
   }
 
   // campaigns for this account
   const { data: campaigns, error: campErr } = await supabase
-    .from('amazon_campaigns')
-    .select('id')
-    .eq('account_id', account.id);
+    .from("amazon_campaigns")
+    .select("id")
+    .eq("account_id", account.id);
   if (campErr) {
-    console.error('Failed to load campaigns for account', account.id, campErr.message);
+    console.error(
+      "Failed to load campaigns for account",
+      account.id,
+      campErr.message
+    );
     return;
   }
 
   const campaignIds = (campaigns || []).map((c) => c.id);
   if (!campaignIds.length) {
-    console.log('No campaigns for account', account.id);
+    console.log("No campaigns for account", account.id);
     return;
   }
 
   // load keywords + metrics from DB
   const { data: keywords, error: kwErr } = await supabase
-    .from('amazon_keywords')
-    .select('id, campaign_id, keyword_id, text, match_type, bid, status, spend, impressions, clicks, orders, acos')
-    .in('campaign_id', campaignIds);
+    .from("amazon_keywords")
+    .select(
+      "id, campaign_id, keyword_id, text, match_type, bid, status, spend, impressions, clicks, orders, acos"
+    )
+    .in("campaign_id", campaignIds);
   if (kwErr) {
-    console.error('Failed to load keywords for account', account.id, kwErr.message);
+    console.error(
+      "Failed to load keywords for account",
+      account.id,
+      kwErr.message
+    );
     return;
   }
 
   const keywordsForAccount = keywords || [];
   if (!keywordsForAccount.length) {
-    console.log('No keywords for account', account.id);
+    console.log("No keywords for account", account.id);
     return;
   }
 
   for (const rule of rulesForUser) {
     if (!ruleDue(rule)) {
-      console.log(`Skipping rule ${rule.name} for account ${account.id} (frequency)`);
+      console.log(
+        `Skipping rule ${rule.name} for account ${account.id} (frequency)`
+      );
       continue;
     }
 
     const actions = buildActionsForRule(rule, account, keywordsForAccount);
     if (!actions.length) {
-      console.log(`Rule ${rule.name} produced no actions for account ${account.id}`);
+      console.log(
+        `Rule ${rule.name} produced no actions for account ${account.id}`
+      );
       // Still update last_run to avoid constant re-evaluation
       await supabase
-        .from('optimization_rules')
+        .from("optimization_rules")
         .update({ last_run: nowIso() })
-        .eq('id', rule.id);
+        .eq("id", rule.id);
       continue;
     }
 
-    console.log(`Rule ${rule.name} -> ${actions.length} action(s) for account ${account.id}`);
+    console.log(
+      `Rule ${rule.name} -> ${actions.length} action(s) for account ${account.id}`
+    );
 
     const results = await sendBidAdjustments(account, accessToken, actions);
     const byKw = new Map(results.map((r) => [String(r.keywordAmazonId), r]));
     await logActions(account, rule, actions, byKw);
 
     await supabase
-      .from('optimization_rules')
+      .from("optimization_rules")
       .update({ last_run: nowIso() })
-      .eq('id', rule.id);
+      .eq("id", rule.id);
   }
 }
 
 async function runOneCycle() {
-  console.log('▶️ VPS Keyword Optimizer cycle started at', nowIso());
+  console.log("▶️ VPS Keyword Optimizer cycle started at", nowIso());
 
   try {
     const [rules, accounts] = await Promise.all([
@@ -495,14 +557,14 @@ async function runOneCycle() {
     ]);
 
     if (!rules.length) {
-      console.log('No enabled rules. Nothing to do this cycle.');
-      await logJob('success', 'No rules to run (cycle)');
+      console.log("No enabled rules. Nothing to do this cycle.");
+      await logJob("success", "No rules to run (cycle)");
       return;
     }
 
     if (!accounts.length) {
-      console.log('No active amazon_accounts. Nothing to do this cycle.');
-      await logJob('success', 'No accounts to optimize (cycle)');
+      console.log("No active amazon_accounts. Nothing to do this cycle.");
+      await logJob("success", "No accounts to optimize (cycle)");
       return;
     }
 
@@ -518,7 +580,9 @@ async function runOneCycle() {
     for (const account of accounts) {
       const r = rulesByUser.get(account.user_id) || [];
       if (!r.length) {
-        console.log(`No rules for user ${account.user_id}; skipping account ${account.id}`);
+        console.log(
+          `No rules for user ${account.user_id}; skipping account ${account.id}`
+        );
         continue;
       }
 
@@ -529,11 +593,11 @@ async function runOneCycle() {
       }
     }
 
-    console.log('🏁 VPS Keyword Optimizer cycle finished at', nowIso());
-    await logJob('success', 'Keyword optimizer cycle finished successfully');
+    console.log("🏁 VPS Keyword Optimizer cycle finished at", nowIso());
+    await logJob("success", "Keyword optimizer cycle finished successfully");
   } catch (e) {
-    console.error('Fatal optimizer error in cycle:', e);
-    await logJob('error', 'Keyword optimizer cycle failed', {
+    console.error("Fatal optimizer error in cycle:", e);
+    await logJob("error", "Keyword optimizer cycle failed", {
       error: String(e.message || e),
     });
   }
@@ -541,14 +605,14 @@ async function runOneCycle() {
 
 async function main() {
   if (RUN_ONCE) {
-    console.log('RUN_ONCE=1, executing a single optimization cycle.');
+    console.log("RUN_ONCE=1, executing a single optimization cycle.");
     await runOneCycle();
     return;
   }
 
   const intervalMs = CHECK_INTERVAL_MINUTES * 60 * 1000;
   console.log(
-    `▶️ VPS Keyword Optimizer daemon started at ${nowIso()} (interval ${CHECK_INTERVAL_MINUTES} min)`,
+    `▶️ VPS Keyword Optimizer daemon started at ${nowIso()} (interval ${CHECK_INTERVAL_MINUTES} min)`
   );
 
   // Simple daemon loop: run a cycle, then sleep.
@@ -563,7 +627,7 @@ async function main() {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   main().catch((e) => {
-    console.error('Fatal error in main()', e);
+    console.error("Fatal error in main()", e);
     process.exit(1);
   });
 }
