@@ -21,7 +21,12 @@
 
 // Load env vars from .env file (for VPS deployment)
 import { config as dotenvConfig } from "dotenv";
-dotenvConfig();
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+dotenvConfig({ path: resolve(__dirname, "../.env") });
 
 import { createClient } from "@supabase/supabase-js";
 
