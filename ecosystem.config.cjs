@@ -1,10 +1,13 @@
 // ecosystem.config.cjs
 require("dotenv").config();
+const path = require("path");
+
 module.exports = {
   apps: [
     {
       name: "robotads-sync",
       script: "./scripts/syncAmazonDataVps.js",
+      cwd: __dirname,
       instances: 1,
       autorestart: true,
       watch: false,
@@ -20,6 +23,7 @@ module.exports = {
     {
       name: "robotads-optimizer",
       script: "./scripts/optimizerVps.js",
+      cwd: __dirname,
       instances: 1,
       autorestart: true,
       watch: false,
@@ -34,6 +38,7 @@ module.exports = {
     {
       name: "robotads-server",
       script: "./scripts/startOptimizationServer.js",
+      cwd: __dirname,
       instances: 1,
       autorestart: true,
       watch: false,
