@@ -928,7 +928,9 @@ async function syncAccount(account, windowDays) {
       if (STREAM_UPSERTS && perAgRows.length > 0) {
         const { data: agData, error: upsertAgErr } = await supabase
           .from("amazon_ad_groups")
-          .upsert(perAgRows)
+          .upsert(perAgRows, {
+            onConflict: "amazon_profile_id_text,amazon_ad_group_id",
+          })
           .select("id, amazon_ad_group_id");
         if (upsertAgErr) {
           console.error("Upsert ad groups error", upsertAgErr);
@@ -1073,7 +1075,9 @@ async function syncAccount(account, windowDays) {
     });
     const { data: agData, error: upsertAgErr } = await supabase
       .from("amazon_ad_groups")
-      .upsert(upsertRows)
+      .upsert(upsertRows, {
+        onConflict: "amazon_profile_id_text,amazon_ad_group_id",
+      })
       .select("id, amazon_ad_group_id");
     if (upsertAgErr) {
       console.error("Upsert ad groups error", upsertAgErr);
@@ -1322,7 +1326,9 @@ async function syncAccount(account, windowDays) {
           if (updates.length > 0) {
             const { error: agUpdErr } = await supabase
               .from("amazon_ad_groups")
-              .upsert(updates);
+              .upsert(updates, {
+                onConflict: "amazon_profile_id_text,amazon_ad_group_id",
+              });
             if (agUpdErr)
               console.error("Failed to upsert ad group metrics", agUpdErr);
             else
