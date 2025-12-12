@@ -2,7 +2,7 @@
   "rewrites": [
     {
       "source": "/api/optimizer/(.*)",
-      "destination": "https://optimizer.royaltix.pro/$1"
+      "destination": "http://45.8.149.176:3001/$1"
     },
     {
       "source": "/(.*)",
