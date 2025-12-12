@@ -17,7 +17,8 @@ module.exports = {
         AMAZON_CLIENT_ID: process.env.AMAZON_CLIENT_ID,
         AMAZON_CLIENT_SECRET: process.env.AMAZON_CLIENT_SECRET,
         SYNC_LOOP_MIN: "60", // Run sync every 60 minutes
-        STRICT_ONLY_REPORTS: "true", // Strict mode: do not aggregate from keywords if report fails
+        DAYS_WINDOW: "1", // Test with 1 day only for faster report generation
+        STRICT_ONLY_REPORTS: "false", // Allow fallback to aggregated metrics from keywords
       },
     },
     {
