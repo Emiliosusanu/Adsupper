@@ -128,8 +128,61 @@ function buildDateRange(daysWindow) {
 }
 
 async function downloadReportRows(downloadUrl) {
-  // Stub for syntax debugging
-  return [];
+  try {
+    const res = await fetch(downloadUrl);
+    if (!res.ok) {
+      console.error("Report download failed", res.status);
+      return [];
+    }
+
+    let text;
+    try {
+      const encoding = res.headers.get("content-encoding") || "";
+
+      if (encoding.includes("gzip") || downloadUrl.endsWith(".gz")) {
+        // Use DecompressionStream for GZIP content
+        const ds = new DecompressionStream("gzip");
+
+        if (res.body) {
+          const stream = res.body.pipeThrough(ds);
+          text = await new Response(stream).text();
+        } else {
+          // Fallback for environments without streaming
+          const buf = new Uint8Array(await res.arrayBuffer());
+          const { gunzipSync } = await import("node:zlib");
+          text = gunzipSync(buf).toString("utf8");
+        }
+      } else {
+        text = await res.text();
+      }
+    } catch (e) {
+      console.error("GZIP decompress failed, falling back to text()", e);
+      text = await res.text();
+    }
+
+    // Try to parse as JSON array first
+    try {
+      const parsed = JSON.parse(text);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      // Fallback: NDJSON (one JSON object per line)
+      return text
+        .trim()
+        .split("\n")
+        .filter((l) => l.trim().length > 0)
+        .map((l) => {
+          try {
+            return JSON.parse(l);
+          } catch {
+            return null;
+          }
+        })
+        .filter((r) => r);
+    }
+  } catch (e) {
+    console.error("Error in downloadReportRows:", e);
+    return [];
+  }
 }
 
 async function getCampaignMetrics(profileId, accessToken, daysWindow, apiBase) {
